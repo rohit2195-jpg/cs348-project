@@ -2,7 +2,11 @@ from bs4 import BeautifulSoup
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time
+import pandas as pd
 
 headers = {
     "User-Agent": (
@@ -18,7 +22,7 @@ def todayHeadlines():
     with open('backend/webscraping/sites.txt', "r") as file:
         lines = file.readlines()
     # opening the file to deposit scraped info
-    with open('backend/webscraping/todays_headlines.txt', "a") as file:
+    with open('backend/webscraping/todays_headlines.txt', "w") as file:
         for line in lines:
             line = line.strip()
             response = requests.get(line)
@@ -50,26 +54,59 @@ def todayHeadlines():
                 for p in paragraphs:
                     p = p.get_text(strip=True)
                     if (len(p) >= 95):
-                        content += "\n\n" + p
+                        content += " " + p
 
                 
-                file.write(title + "\n\n" + content + "\n\n")
-                file.write('----------------------------------------------------\n\n')
+                file.write(title + ": " + content + "\n")
 
 
             print('----------------------')
 
         print(lines)
 
-# getting infromation on stocks currently held
-def analysisHeldStock(ticker_list):
+# getting infromation on all f500 stocks
+def analysisHeldStock():
 
     # creating a pypeteering script to read js
+
+    # get all f500 companies
+    driver = webdriver.Chrome()
+    driver.get("https://stockanalysis.com/list/sp-500-stocks/")
+
+    wait = WebDriverWait(driver, 10)
+
+    table = wait.until(
+        EC.presence_of_element_located((By.ID, "main-table"))
+    )
+
+    headers = []
+    header_elements = table.find_elements(By.TAG_NAME, "th")
+    for header in header_elements:
+        headers.append(header.text.strip())
+
+    rows = table.find_elements(By.TAG_NAME, "tr")
+
+    data = []
+    for row in rows[1:]:
+        cols = row.find_elements(By.TAG_NAME, "td")
+        if cols:
+            data.append([col.text.strip() for col in cols])
+
+    df = pd.DataFrame(data, columns=headers)
+
+    print(df.head())
+
+    driver.quit()
+
+    # Example: get tickers column
+    ticker_list = df["Symbol"].to_list()
+
     
     driver = webdriver.Chrome()
-    with open(f'backend/webscraping/tickerAnalysis/{ticker.lower()}.txt', "w") as file:
 
-        for ticker in ticker_list:
+    for ticker in ticker_list:
+        with open(f'backend/webscraping/tickerAnalysis/{ticker.lower()}.txt', "w") as file:
+
             url = f"https://stockanalysis.com/stocks/{ticker.lower()}/forecast/"
             driver.get(url)
 
@@ -86,12 +123,6 @@ def analysisHeldStock(ticker_list):
 
     driver.quit()
 
-    todayHeadlines()
-
-    
-ticker_list = ["AAPL", "NVDA", "MSFT", "AMZN"]
-
-print(analysisHeldStock(ticker_list))
 
 
 
