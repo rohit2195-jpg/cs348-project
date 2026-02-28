@@ -44,6 +44,7 @@ class OrderHistory(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
     status = Column(Enum(OrderStatus), default=OrderStatus.pending)
     trade_type = Column(Enum(TradeType), nullable=False)
+    alpaca_order_id = Column(String(64), nullable=True)  # Alpaca UUID, set after submission
 
 
 Base.metadata.create_all(bind=engine)
@@ -127,7 +128,8 @@ def upsert_position(symbol: str, price: float, quantity: int, date: str):
 
 # ── Orders ───────────────────────────────────────────────────────────────────
 
-def create_order(symbol: str, price: float, quantity: int, trade_type: str) -> int:
+def create_order(symbol: str, price: float, quantity: int, trade_type: str,
+                 alpaca_order_id: str = None) -> int:
     session = SessionLocal()
     try:
         order = OrderHistory(
@@ -136,11 +138,34 @@ def create_order(symbol: str, price: float, quantity: int, trade_type: str) -> i
             quantity=quantity,
             trade_type=TradeType(trade_type),
             status=OrderStatus.pending,
+            alpaca_order_id=alpaca_order_id,
         )
         session.add(order)
         session.commit()
         session.refresh(order)
         return order.id
+    finally:
+        session.close()
+
+
+def set_alpaca_order_id(order_id: int, alpaca_order_id: str):
+    """Store the Alpaca UUID against a local order record."""
+    session = SessionLocal()
+    try:
+        order = session.query(OrderHistory).get(order_id)
+        if order:
+            order.alpaca_order_id = alpaca_order_id
+            session.commit()
+    finally:
+        session.close()
+
+
+def get_alpaca_order_id(order_id: int):
+    """Retrieve the Alpaca UUID for a local order."""
+    session = SessionLocal()
+    try:
+        order = session.query(OrderHistory).get(order_id)
+        return order.alpaca_order_id if order else None
     finally:
         session.close()
 
@@ -178,13 +203,14 @@ def get_all_orders() -> list:
         )
         return [
             {
-                "id": o.id,
-                "symbol": o.symbol,
-                "price": o.price,
-                "quantity": o.quantity,
-                "trade_type": o.trade_type.value,
-                "status": o.status.value,
-                "timestamp": o.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                "id":              o.id,
+                "symbol":          o.symbol,
+                "price":           o.price,
+                "quantity":        o.quantity,
+                "trade_type":      o.trade_type.value,
+                "status":          o.status.value,
+                "timestamp":       o.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                "alpaca_order_id": o.alpaca_order_id,
             }
             for o in orders
         ]

@@ -17,6 +17,7 @@ from alpaca.data.requests import (
     StockBarsRequest,
 )
 from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed
 
 dotenv.load_dotenv()
 API_KEY = os.getenv("ALPACA_API_KEY")
@@ -39,18 +40,37 @@ def is_market_open() -> bool:
 # ── Quotes ───────────────────────────────────────────────────────────────────
 
 def get_latest_price(symbol: str) -> float:
-    req = StockLatestQuoteRequest(symbol_or_symbols=symbol.upper())
-    quote = data_client.get_stock_latest_quote(req)
-    return float(quote[symbol.upper()].ask_price)
+    """
+    Fetch latest price. Falls back to bid_price when ask_price is 0 (outside hours).
+    Raises ValueError with a clear message for invalid symbols.
+    """
+    sym = symbol.upper().strip()
+    if not sym or not sym.replace(".", "").isalpha() or len(sym) > 5:
+        raise ValueError(f"Invalid symbol '{sym}'. Use a standard US ticker like AAPL or TSLA.")
+    try:
+        req   = StockLatestQuoteRequest(symbol_or_symbols=sym, feed=DataFeed.IEX)
+        quote = data_client.get_stock_latest_quote(req)
+        q     = quote[sym]
+        price = float(q.ask_price) or float(q.bid_price)
+        if price == 0:
+            raise ValueError(f"No price data for '{sym}'. Market may be closed or symbol unrecognised.")
+        return price
+    except KeyError:
+        raise ValueError(f"Symbol '{sym}' not found on Alpaca. Check the ticker (e.g. AAPL not APPL).")
 
 
 def get_latest_prices(symbols: list) -> dict:
     """Batch fetch prices for multiple symbols. Returns {symbol: price}."""
     if not symbols:
         return {}
-    req = StockLatestQuoteRequest(symbol_or_symbols=[s.upper() for s in symbols])
+    syms   = [s.upper() for s in symbols]
+    req    = StockLatestQuoteRequest(symbol_or_symbols=syms, feed=DataFeed.IEX)
     quotes = data_client.get_stock_latest_quote(req)
-    return {sym: float(q.ask_price) for sym, q in quotes.items()}
+    result = {}
+    for sym, q in quotes.items():
+        price = float(q.ask_price) or float(q.bid_price)
+        result[sym] = price
+    return result
 
 
 # ── Positions ────────────────────────────────────────────────────────────────
@@ -94,20 +114,41 @@ def get_price_history(symbol: str, days: int = 30) -> list:
     Returns list of {"date": "YYYY-MM-DD", "close": float}
     — same shape expected by Recharts/Chart.js on the React side.
     """
-    end = datetime.now()
+    sym = symbol.upper().strip()
+    if not sym or not sym.replace(".", "").isalpha() or len(sym) > 5:
+        raise ValueError(f"Invalid symbol '{sym}'. Use a standard US ticker like AAPL or TSLA.")
+
+    # Alpaca requires timezone-aware datetimes
+    from datetime import timezone
+    end   = datetime.now(timezone.utc)
     start = end - timedelta(days=days + 7)  # buffer for weekends/holidays
 
-    req = StockBarsRequest(
-        symbol_or_symbols=symbol.upper(),
-        timeframe=TimeFrame.Day,
-        start=start,
-        end=end,
-    )
-    bars = data_client.get_stock_bars(req)
+    # Try IEX first (free tier), fall back to default SIP feed
+    def _fetch(feed=None):
+        kwargs = dict(symbol_or_symbols=sym, timeframe=TimeFrame.Day, start=start, end=end)
+        if feed:
+            kwargs["feed"] = feed
+        req  = StockBarsRequest(**kwargs)
+        bars = data_client.get_stock_bars(req)
+        return bars.get(sym, [])
+
+    try:
+        raw = _fetch(DataFeed.IEX)
+        if not raw:
+            raw = _fetch()          # retry without feed restriction
+    except Exception:
+        try:
+            raw = _fetch()          # IEX failed entirely, try default
+        except Exception as e:
+            raise ValueError(f"Could not fetch data for '{sym}': {e}")
+
+    if not raw:
+        raise ValueError(f"No historical data available for '{sym}'.")
+
     result = []
-    for bar in bars[symbol.upper()]:
+    for bar in raw:
         result.append({
-            "date": bar.timestamp.strftime("%Y-%m-%d"),
+            "date":  bar.timestamp.strftime("%Y-%m-%d"),
             "close": round(float(bar.close), 2),
         })
     return result[-days:]
@@ -185,4 +226,55 @@ def get_portfolio_vs_spy(symbols_with_purchase: list, days: int = 30) -> dict:
         "portfolio": portfolio_series,
         "spy": spy_normalized,
         "stocks": histories,
+    }
+
+
+# ── Order status polling ───────────────────────────────────────────────────────
+
+def get_order(alpaca_order_id: str):
+    """Fetch a single order from Alpaca by its ID."""
+    return trading_client.get_order_by_id(alpaca_order_id)
+
+
+def wait_for_fill(alpaca_order_id: str, timeout: int = 10) -> dict:
+    """
+    Poll Alpaca until the order is filled or canceled/rejected.
+    Returns a dict: {"status": str, "filled_price": float or None}
+
+    timeout: max seconds to wait. For paper trading, fills are near-instant
+    during market hours. Outside hours, DAY orders stay pending.
+    """
+    import time
+
+    # Terminal states — stop polling when we hit one of these
+    FILLED    = "filled"
+    DONE      = {"canceled", "rejected", "expired", "done_for_day"}
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        order  = trading_client.get_order_by_id(alpaca_order_id)
+        status = order.status.value  # always use .value to get the string
+
+        if status == FILLED:
+            return {
+                "status":       "filled",
+                "filled_price": float(order.filled_avg_price),
+                "filled_qty":   int(float(order.filled_qty)),
+            }
+        if status in DONE:
+            return {
+                "status":       status,
+                "filled_price": None,
+                "filled_qty":   0,
+            }
+        # still pending/new/accepted — wait and retry
+        time.sleep(1)
+
+    # timed out — return current state without updating portfolio
+    order  = trading_client.get_order_by_id(alpaca_order_id)
+    status = order.status.value
+    return {
+        "status":       status,
+        "filled_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+        "filled_qty":   int(float(order.filled_qty)) if order.filled_qty else 0,
     }
