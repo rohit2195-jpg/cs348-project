@@ -372,3 +372,168 @@ def get_portfolio_snapshot() -> list:
         ]
     finally:
         session.close()
+
+
+# ── Watchlist ─────────────────────────────────────────────────────────────────
+
+class TargetDirection(enum.Enum):
+    above = "above"   # alert when price rises ABOVE target
+    below = "below"   # alert when price falls BELOW target
+
+class Watchlist(Base):
+    __tablename__ = "watchlist"
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    symbol          = Column(String(10), nullable=False, unique=True)
+    added_date      = Column(String(10), nullable=False)   # YYYY-MM-DD
+    target_price    = Column(Float, nullable=True)         # None = watch only, no alert
+    target_direction= Column(Enum(TargetDirection), nullable=True)
+    notes           = Column(String(500), nullable=True)
+    triggered       = Column(Integer, default=0)           # 0=pending, 1=triggered, 2=dismissed
+    triggered_at    = Column(DateTime, nullable=True)
+    triggered_price = Column(Float, nullable=True)
+
+
+def add_to_watchlist(symbol: str, target_price: float = None,
+                     target_direction: str = None, notes: str = None) -> dict:
+    """Add a symbol to the watchlist. Returns the new row as a dict."""
+    session = SessionLocal()
+    try:
+        existing = session.query(Watchlist).filter(
+            Watchlist.symbol == symbol.upper()
+        ).first()
+        if existing:
+            # Update instead of duplicate
+            if target_price    is not None: existing.target_price     = target_price
+            if target_direction is not None: existing.target_direction = TargetDirection(target_direction)
+            if notes           is not None: existing.notes            = notes
+            existing.triggered       = 0
+            existing.triggered_at    = None
+            existing.triggered_price = None
+            session.commit()
+            return _watchlist_dict(existing)
+
+        row = Watchlist(
+            symbol           = symbol.upper(),
+            added_date       = datetime.now().strftime("%Y-%m-%d"),
+            target_price     = target_price,
+            target_direction = TargetDirection(target_direction) if target_direction else None,
+            notes            = notes,
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return _watchlist_dict(row)
+    finally:
+        session.close()
+
+
+def remove_from_watchlist(symbol: str) -> bool:
+    session = SessionLocal()
+    try:
+        row = session.query(Watchlist).filter(
+            Watchlist.symbol == symbol.upper()
+        ).first()
+        if row:
+            session.delete(row)
+            session.commit()
+            return True
+        return False
+    finally:
+        session.close()
+
+
+def get_watchlist() -> list:
+    session = SessionLocal()
+    try:
+        rows = session.query(Watchlist).order_by(Watchlist.added_date.desc()).all()
+        return [_watchlist_dict(r) for r in rows]
+    finally:
+        session.close()
+
+
+def get_watchlist_active() -> list:
+    """Only rows with untriggered targets — used by the settler."""
+    session = SessionLocal()
+    try:
+        rows = session.query(Watchlist).filter(
+            Watchlist.target_price != None,
+            Watchlist.triggered == 0,
+        ).all()
+        return [_watchlist_dict(r) for r in rows]
+    finally:
+        session.close()
+
+
+def mark_watchlist_triggered(symbol: str, price: float):
+    session = SessionLocal()
+    try:
+        row = session.query(Watchlist).filter(
+            Watchlist.symbol == symbol.upper()
+        ).first()
+        if row:
+            row.triggered       = 1
+            row.triggered_at    = datetime.utcnow()
+            row.triggered_price = price
+            session.commit()
+    finally:
+        session.close()
+
+
+def dismiss_watchlist_alert(symbol: str):
+    """Mark alert as seen/dismissed (triggered=2) without removing the entry."""
+    session = SessionLocal()
+    try:
+        row = session.query(Watchlist).filter(
+            Watchlist.symbol == symbol.upper()
+        ).first()
+        if row:
+            row.triggered = 2
+            session.commit()
+    finally:
+        session.close()
+
+
+def update_watchlist_entry(symbol: str, target_price=None,
+                           target_direction=None, notes=None):
+    session = SessionLocal()
+    try:
+        row = session.query(Watchlist).filter(
+            Watchlist.symbol == symbol.upper()
+        ).first()
+        if not row:
+            return None
+        if target_price     is not None: row.target_price     = target_price if target_price != "" else None
+        if target_direction is not None: row.target_direction = TargetDirection(target_direction) if target_direction else None
+        if notes            is not None: row.notes            = notes
+        # Reset trigger state when target changes
+        row.triggered       = 0
+        row.triggered_at    = None
+        row.triggered_price = None
+        session.commit()
+        return _watchlist_dict(row)
+    finally:
+        session.close()
+
+
+def get_unread_alerts() -> list:
+    """Triggered but not yet dismissed."""
+    session = SessionLocal()
+    try:
+        rows = session.query(Watchlist).filter(Watchlist.triggered == 1).all()
+        return [_watchlist_dict(r) for r in rows]
+    finally:
+        session.close()
+
+
+def _watchlist_dict(row) -> dict:
+    return {
+        "id":               row.id,
+        "symbol":           row.symbol,
+        "added_date":       row.added_date,
+        "target_price":     row.target_price,
+        "target_direction": row.target_direction.value if row.target_direction else None,
+        "notes":            row.notes or "",
+        "triggered":        row.triggered,
+        "triggered_at":     row.triggered_at.strftime("%Y-%m-%d %H:%M") if row.triggered_at else None,
+        "triggered_price":  row.triggered_price,
+    }

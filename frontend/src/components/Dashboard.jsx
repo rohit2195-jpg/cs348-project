@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { SettingsPanel } from '../Settings';
 import ReportPanel from './ReportPanel';
+import WatchlistPanel from './WatchListPanel';
 import AccountHeader from './AccountHeader';
 import PortfolioPanel from './PortfolioPanel';
 import OrdersPanel from './OrdersPanel';
@@ -10,7 +11,7 @@ import TradeModal from './TradeModal';
 import QuoteModal from './QuoteModal';
 import { styles } from './styles';
 
-import { API } from "./Config.js";
+import { API } from "./Config";
 const REFRESH_MS   = 15000;
 
 export default function Dashboard() {
@@ -22,6 +23,7 @@ export default function Dashboard() {
   const [lastUpdate, setLastUpdate] = useState(null);
   const [modal,      setModal]      = useState(null); // "buy"|"sell"|"quote"|"settings"|null
   const [flash,      setFlash]      = useState({ msg: "", err: false });
+  const [wlAlerts,   setWlAlerts]   = useState(0);  // unread watchlist alerts
 
   // ── Flash message ───────────────────────────────────────────────────────────
   const showFlash = useCallback((msg, isErr = false) => {
@@ -57,6 +59,20 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [fetchAll]);
 
+  // Poll watchlist alerts independently (30s) — lightweight, just a count
+  useEffect(() => {
+    const checkAlerts = async () => {
+      try {
+        const res  = await fetch(`${API}/watchlist/alerts`);
+        const data = await res.json();
+        setWlAlerts(Array.isArray(data) ? data.length : 0);
+      } catch {}
+    };
+    checkAlerts();
+    const id = setInterval(checkAlerts, 30000);
+    return () => clearInterval(id);
+  }, []);
+
   // ── Keyboard shortcuts ───────────────────────────────────────────────────────
   // B = buy  |  S = sell  |  Q = quote  |  R = refresh  |  Esc = close modal
   // Shortcuts are disabled when any modal is open (user is typing in inputs)
@@ -72,6 +88,7 @@ export default function Dashboard() {
         case 'q': if (!modal) setModal('quote');   break;
         case 'r': if (!modal) fetchAll();          break;
         case 'escape': setModal(null);             break;
+        case 'w': if (!modal) setModal('watchlist');  break;
         case 'f': if (!modal) setModal('report');   break;
         default: break;
       }
@@ -161,6 +178,22 @@ export default function Dashboard() {
           <button className={`cmd-btn ${modal === 'report' ? 'active' : ''}`} onClick={() => setModal("report")}>
             [F] FILTER
           </button>
+          <button
+            className={`cmd-btn ${modal === 'watchlist' ? 'active' : ''}`}
+            onClick={() => setModal("watchlist")}
+            style={{ position: "relative" }}
+          >
+            [W] WATCH
+            {wlAlerts > 0 && (
+              <span style={{
+                position: "absolute", top: -6, right: -6,
+                background: "var(--loss)", color: "#fff",
+                borderRadius: "50%", width: 16, height: 16,
+                fontSize: 9, display: "flex", alignItems: "center",
+                justifyContent: "center", fontFamily: "monospace",
+              }}>{wlAlerts}</span>
+            )}
+          </button>
 
           {flash.msg && (
             <span className={`flash-msg ${flash.err ? "err" : ""}`}>
@@ -168,7 +201,7 @@ export default function Dashboard() {
             </span>
           )}
 
-          <span className="kbd-hint">B · S · Q · R · F · ESC</span>
+          <span className="kbd-hint">B · S · Q · R · F · W · ESC</span>
         </div>
 
       </div>
@@ -184,6 +217,16 @@ export default function Dashboard() {
       )}
       {modal === "report" && (
         <ReportPanel onClose={() => setModal(null)} />
+      )}
+      {modal === "watchlist" && (
+        <WatchlistPanel onClose={() => {
+          setModal(null);
+          // Refresh alert count after closing (user may have dismissed alerts)
+          fetch(`${API}/watchlist/alerts`)
+            .then(r => r.json())
+            .then(d => setWlAlerts(Array.isArray(d) ? d.length : 0))
+            .catch(() => {});
+        }} />
       )}
     </>
   );

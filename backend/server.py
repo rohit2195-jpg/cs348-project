@@ -87,6 +87,40 @@ def settle_pending_orders():
             print(f"[settler] error checking order #{o['id']}: {e}")
 
 
+def check_watchlist_targets():
+    """
+    Check every watchlist entry that has an untriggered target price.
+    Called by the background settler every 30s.
+    Fetches live prices in a single batch call to avoid hammering the API.
+    """
+    active = db.get_watchlist_active()
+    if not active:
+        return
+
+    symbols = [w["symbol"] for w in active]
+    try:
+        prices = trading.get_latest_prices(symbols)
+    except Exception as e:
+        print(f"[watchlist] price fetch error: {e}")
+        return
+
+    for w in active:
+        sym   = w["symbol"]
+        price = prices.get(sym)
+        if price is None:
+            continue
+
+        target    = w["target_price"]
+        direction = w["target_direction"]
+
+        hit = (direction == "above" and price >= target) or               (direction == "below" and price <= target)
+
+        if hit:
+            db.mark_watchlist_triggered(sym, price)
+            print(f"[watchlist] 🎯 {sym} target hit! "
+                  f"price={price:.2f} target={target:.2f} ({direction})")
+
+
 def background_settler():
     """Runs forever in a daemon thread. Settles pending orders every 30s."""
     # Give Flask a moment to finish starting up
@@ -94,6 +128,7 @@ def background_settler():
     while True:
         try:
             settle_pending_orders()
+            check_watchlist_targets()
         except Exception as e:
             print(f"[settler] unexpected error: {e}")
         time.sleep(30)
@@ -112,7 +147,7 @@ print("[settler] background order settler started (runs every 30s)")
 def _cors(response):
     response.headers["Access-Control-Allow-Origin"]  = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
     return response
 
 @app.after_request
@@ -468,6 +503,130 @@ def sync_order():
             "message": "Order still pending.",
         })
 
+
+
+# ── Watchlist endpoints ───────────────────────────────────────────────────────
+
+@app.route("/api/watchlist", methods=["GET"])
+def get_watchlist():
+    """All watchlist entries with live prices injected."""
+    try:
+        entries = db.get_watchlist()
+        if not entries:
+            return jsonify([])
+        prices = trading.get_latest_prices([e["symbol"] for e in entries])
+        for e in entries:
+            e["current_price"] = prices.get(e["symbol"])
+            # Calculate % distance from target
+            if e["target_price"] and e["current_price"]:
+                e["target_distance_pct"] = round(
+                    (e["current_price"] - e["target_price"]) / e["target_price"] * 100, 2
+                )
+            else:
+                e["target_distance_pct"] = None
+        return jsonify(entries)
+    except Exception as e:
+        traceback.print_exc()
+        return err(str(e), 500)
+
+
+@app.route("/api/watchlist", methods=["POST"])
+def add_watchlist():
+    """
+    Add or update a watchlist entry.
+    Body: { symbol, target_price?, target_direction?, notes? }
+    target_direction: "above" | "below"
+    """
+    body             = request.get_json(force=True)
+    symbol           = (body.get("symbol") or "").upper().strip()
+    target_price     = body.get("target_price")
+    target_direction = body.get("target_direction")
+    notes            = body.get("notes", "")
+
+    if not symbol:
+        return err("symbol is required")
+    if len(symbol) > 5 or not symbol.replace(".", "").isalpha():
+        return err(f"Invalid symbol '{symbol}'")
+
+    # Validate target fields come together
+    if (target_price is None) != (target_direction is None):
+        return err("target_price and target_direction must both be set, or both omitted")
+    if target_direction and target_direction not in ("above", "below"):
+        return err("target_direction must be 'above' or 'below'")
+
+    # Verify symbol exists on Alpaca
+    try:
+        current_price = trading.get_latest_price(symbol)
+    except Exception as e:
+        return err(f"Could not verify symbol '{symbol}': {e}")
+
+    try:
+        entry = db.add_to_watchlist(
+            symbol           = symbol,
+            target_price     = float(target_price) if target_price else None,
+            target_direction = target_direction,
+            notes            = notes,
+        )
+        entry["current_price"] = current_price
+        return jsonify({"success": True, "entry": entry})
+    except Exception as e:
+        traceback.print_exc()
+        return err(str(e), 500)
+
+
+@app.route("/api/watchlist/<symbol>", methods=["DELETE"])
+def remove_watchlist(symbol):
+    try:
+        removed = db.remove_from_watchlist(symbol.upper())
+        if not removed:
+            return err(f"{symbol.upper()} not in watchlist", 404)
+        return jsonify({"success": True})
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@app.route("/api/watchlist/<symbol>", methods=["PATCH"])
+def update_watchlist(symbol):
+    """Update target price, direction, or notes."""
+    body             = request.get_json(force=True)
+    target_price     = body.get("target_price")
+    target_direction = body.get("target_direction")
+    notes            = body.get("notes")
+
+    if target_direction and target_direction not in ("above", "below", ""):
+        return err("target_direction must be 'above' or 'below'")
+    try:
+        entry = db.update_watchlist_entry(
+            symbol           = symbol.upper(),
+            target_price     = float(target_price) if target_price else None,
+            target_direction = target_direction or None,
+            notes            = notes,
+        )
+        if not entry:
+            return err(f"{symbol.upper()} not in watchlist", 404)
+        return jsonify({"success": True, "entry": entry})
+    except Exception as e:
+        traceback.print_exc()
+        return err(str(e), 500)
+
+
+@app.route("/api/watchlist/alerts", methods=["GET"])
+def get_alerts():
+    """Unread (triggered but not dismissed) alerts — used for badge count."""
+    try:
+        return jsonify(db.get_unread_alerts())
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@app.route("/api/watchlist/<symbol>/dismiss", methods=["POST"])
+def dismiss_alert(symbol):
+    """Mark an alert as seen without removing the watchlist entry."""
+    try:
+        db.dismiss_watchlist_alert(symbol.upper())
+        return jsonify({"success": True})
+    except Exception as e:
+        return err(str(e), 500)
 
 
 # ── Filter & Report endpoints ──────────────────────────────────────────────────
