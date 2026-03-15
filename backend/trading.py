@@ -123,27 +123,34 @@ def get_price_history(symbol: str, days: int = 30) -> list:
     end   = datetime.now(timezone.utc)
     start = end - timedelta(days=days + 7)  # buffer for weekends/holidays
 
-    # Try IEX first (free tier), fall back to default SIP feed
+    # Try IEX first (free tier), fall back to default SIP feed.
+    # BarSet supports direct key access (bars[sym]) not .get() — use try/except.
     def _fetch(feed=None):
         kwargs = dict(symbol_or_symbols=sym, timeframe=TimeFrame.Day, start=start, end=end)
         if feed:
             kwargs["feed"] = feed
         req  = StockBarsRequest(**kwargs)
         bars = data_client.get_stock_bars(req)
-        return bars.get(sym, [])
+        try:
+            data = bars[sym]
+            return list(data) if data else []
+        except (KeyError, TypeError):
+            return []
 
+    raw = []
     try:
         raw = _fetch(DataFeed.IEX)
-        if not raw:
-            raw = _fetch()          # retry without feed restriction
     except Exception:
+        pass
+
+    if not raw:
         try:
-            raw = _fetch()          # IEX failed entirely, try default
+            raw = _fetch()          # retry without feed restriction (SIP)
         except Exception as e:
             raise ValueError(f"Could not fetch data for '{sym}': {e}")
 
     if not raw:
-        raise ValueError(f"No historical data available for '{sym}'.")
+        raise ValueError(f"No historical data available for '{sym}'. Market may be closed or symbol invalid.")
 
     result = []
     for bar in raw:

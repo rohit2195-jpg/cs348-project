@@ -216,3 +216,159 @@ def get_all_orders() -> list:
         ]
     finally:
         session.close()
+
+
+# ── Filter & Report ──────────────────────────────────────────────────────────
+
+def get_symbols() -> list:
+    """Return all unique symbols from both portfolio and order history.
+    Used to build dynamic dropdowns in the frontend — never hardcoded."""
+    session = SessionLocal()
+    try:
+        portfolio_syms = [r.symbol for r in session.query(Portfolio.symbol).distinct()]
+        order_syms     = [r.symbol for r in session.query(OrderHistory.symbol).distinct()]
+        return sorted(set(portfolio_syms + order_syms))
+    finally:
+        session.close()
+
+
+def filter_orders(
+    symbols:    list  = None,   # [] means all
+    trade_type: str   = None,   # "buy" | "sell" | None = both
+    status:     str   = None,   # "filled" | "pending" | "canceled" | None = all
+    date_from:  str   = None,   # "YYYY-MM-DD"
+    date_to:    str   = None,   # "YYYY-MM-DD"
+    price_min:  float = None,
+    price_max:  float = None,
+) -> list:
+    """
+    Filtered order history — all params optional.
+    Returns list of plain dicts (React-ready, safe outside session).
+    This query is built dynamically so the frontend drives the filters.
+    """
+    from sqlalchemy import and_
+    session = SessionLocal()
+    try:
+        q = session.query(OrderHistory)
+
+        if symbols:
+            q = q.filter(OrderHistory.symbol.in_([s.upper() for s in symbols]))
+        if trade_type:
+            q = q.filter(OrderHistory.trade_type == TradeType(trade_type))
+        if status:
+            q = q.filter(OrderHistory.status == OrderStatus(status))
+        if date_from:
+            q = q.filter(OrderHistory.timestamp >= datetime.strptime(date_from, "%Y-%m-%d"))
+        if date_to:
+            # inclusive — add 1 day so "to 2024-03-01" includes that whole day
+            from datetime import timedelta
+            q = q.filter(OrderHistory.timestamp < datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1))
+        if price_min is not None:
+            q = q.filter(OrderHistory.price >= price_min)
+        if price_max is not None:
+            q = q.filter(OrderHistory.price <= price_max)
+
+        orders = q.order_by(OrderHistory.timestamp.desc()).all()
+        return [
+            {
+                "id":         o.id,
+                "symbol":     o.symbol,
+                "price":      o.price,
+                "quantity":   o.quantity,
+                "trade_type": o.trade_type.value,
+                "status":     o.status.value,
+                "timestamp":  o.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                "total_value": round(o.price * o.quantity, 2),
+            }
+            for o in orders
+        ]
+    finally:
+        session.close()
+
+
+def filter_portfolio(
+    symbols:   list  = None,
+    pl_min:    float = None,   # P/L % min
+    pl_max:    float = None,   # P/L % max
+    val_min:   float = None,   # market value min
+    val_max:   float = None,   # market value max
+    prices:    dict  = None,   # {symbol: current_price} — injected by server
+) -> list:
+    """
+    Filtered portfolio — P/L and value filters require live prices
+    which are injected by the server layer (keeps DB layer clean).
+    Returns plain dicts with full P/L data.
+    """
+    session = SessionLocal()
+    try:
+        q = session.query(Portfolio)
+        if symbols:
+            q = q.filter(Portfolio.symbol.in_([s.upper() for s in symbols]))
+        rows = q.all()
+    finally:
+        session.close()
+
+    prices = prices or {}
+    result = []
+    for r in rows:
+        current    = prices.get(r.symbol, 0.0)
+        pl_val     = (current - r.purchasePrice) * r.quantity
+        pl_pct     = ((current - r.purchasePrice) / r.purchasePrice * 100) if r.purchasePrice else 0
+        mkt_value  = round(current * r.quantity, 2)
+
+        # Apply numeric filters (post-query since they need live prices)
+        if pl_min  is not None and pl_pct  < pl_min:  continue
+        if pl_max  is not None and pl_pct  > pl_max:  continue
+        if val_min is not None and mkt_value < val_min: continue
+        if val_max is not None and mkt_value > val_max: continue
+
+        result.append({
+            "symbol":        r.symbol,
+            "quantity":      r.quantity,
+            "avg_price":     r.purchasePrice,
+            "current_price": current,
+            "market_value":  mkt_value,
+            "pl":            round(pl_val, 2),
+            "pl_pct":        round(pl_pct, 2),
+            "purchase_date": r.purchaseDate,
+        })
+    return result
+
+
+def get_order_by_id(order_id: int) -> dict:
+    """Fetch a single order as a plain dict — used for before/after reports."""
+    session = SessionLocal()
+    try:
+        o = session.query(OrderHistory).get(order_id)
+        if not o:
+            return None
+        return {
+            "id":         o.id,
+            "symbol":     o.symbol,
+            "price":      o.price,
+            "quantity":   o.quantity,
+            "trade_type": o.trade_type.value,
+            "status":     o.status.value,
+            "timestamp":  o.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            "total_value": round(o.price * o.quantity, 2),
+        }
+    finally:
+        session.close()
+
+
+def get_portfolio_snapshot() -> list:
+    """Full portfolio snapshot as plain dicts — used for before/after diff reports."""
+    session = SessionLocal()
+    try:
+        rows = session.query(Portfolio).order_by(Portfolio.symbol).all()
+        return [
+            {
+                "symbol":        r.symbol,
+                "quantity":      r.quantity,
+                "avg_price":     r.purchasePrice,
+                "purchase_date": r.purchaseDate,
+            }
+            for r in rows
+        ]
+    finally:
+        session.close()

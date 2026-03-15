@@ -468,8 +468,130 @@ def sync_order():
             "message": "Order still pending.",
         })
 
+
+
+# ── Filter & Report endpoints ──────────────────────────────────────────────────
+
+@app.route("/api/symbols", methods=["GET"])
+def get_symbols():
+    """
+    All unique symbols from portfolio + order history.
+    Used to build dynamic dropdowns in the frontend — never hardcoded.
+    """
+    try:
+        return jsonify(db.get_symbols())
+    except Exception as e:
+        return err(str(e), 500)
+
+
+@app.route("/api/filter/orders", methods=["GET"])
+def filter_orders():
+    """
+    Filtered order history. All query params optional:
+      symbols     — comma-separated e.g. AAPL,TSLA
+      trade_type  — buy | sell
+      status      — filled | pending | canceled
+      date_from   — YYYY-MM-DD
+      date_to     — YYYY-MM-DD  (inclusive)
+      price_min   — float
+      price_max   — float
+    """
+    try:
+        symbols_raw = request.args.get("symbols", "")
+        symbols     = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+        trade_type  = request.args.get("trade_type") or None
+        status      = request.args.get("status")     or None
+        date_from   = request.args.get("date_from")  or None
+        date_to     = request.args.get("date_to")    or None
+        price_min   = float(request.args["price_min"]) if request.args.get("price_min") else None
+        price_max   = float(request.args["price_max"]) if request.args.get("price_max") else None
+
+        orders = db.filter_orders(
+            symbols=symbols, trade_type=trade_type, status=status,
+            date_from=date_from, date_to=date_to,
+            price_min=price_min, price_max=price_max,
+        )
+        return jsonify({
+            "results": orders,
+            "count":   len(orders),
+            "filters": {
+                "symbols": symbols, "trade_type": trade_type, "status": status,
+                "date_from": date_from, "date_to": date_to,
+                "price_min": price_min, "price_max": price_max,
+            }
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return err(str(e), 500)
+
+
+@app.route("/api/filter/portfolio", methods=["GET"])
+def filter_portfolio():
+    """
+    Filtered portfolio. All query params optional:
+      symbols   — comma-separated
+      pl_min    — P/L % minimum
+      pl_max    — P/L % maximum
+      val_min   — market value minimum ($)
+      val_max   — market value maximum ($)
+    """
+    try:
+        symbols_raw = request.args.get("symbols", "")
+        symbols     = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+        pl_min      = float(request.args["pl_min"])  if request.args.get("pl_min")  else None
+        pl_max      = float(request.args["pl_max"])  if request.args.get("pl_max")  else None
+        val_min     = float(request.args["val_min"]) if request.args.get("val_min") else None
+        val_max     = float(request.args["val_max"]) if request.args.get("val_max") else None
+
+        # Fetch live prices for all held symbols to calculate P/L
+        all_positions = db.get_portfolio()
+        all_symbols   = [r.symbol for r in all_positions]
+        prices        = trading.get_latest_prices(all_symbols) if all_symbols else {}
+
+        positions = db.filter_portfolio(
+            symbols=symbols, pl_min=pl_min, pl_max=pl_max,
+            val_min=val_min, val_max=val_max, prices=prices,
+        )
+        return jsonify({
+            "results": positions,
+            "count":   len(positions),
+            "filters": {
+                "symbols": symbols,
+                "pl_min": pl_min, "pl_max": pl_max,
+                "val_min": val_min, "val_max": val_max,
+            }
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return err(str(e), 500)
+
+
+@app.route("/api/report/snapshot", methods=["GET"])
+def portfolio_snapshot():
+    """
+    Returns the current portfolio snapshot (plain DB values, no live prices).
+    Used by the before/after diff report — call before and after making changes.
+    """
+    try:
+        snapshot = db.get_portfolio_snapshot()
+        prices   = trading.get_latest_prices([r["symbol"] for r in snapshot]) if snapshot else {}
+        for row in snapshot:
+            row["current_price"] = prices.get(row["symbol"], 0.0)
+            row["market_value"]  = round(row["current_price"] * row["quantity"], 2)
+            row["pl_pct"]        = round(
+                (row["current_price"] - row["avg_price"]) / row["avg_price"] * 100, 2
+            ) if row["avg_price"] else 0
+        return jsonify({
+            "snapshot":   snapshot,
+            "taken_at":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total_value": round(sum(r["market_value"] for r in snapshot), 2),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return err(str(e), 500)
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 # use_reloader=False prevents the double-process issue that breaks CORS in Chrome
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8000, use_reloader=False)
+    app.run(debug=True, port=5000, use_reloader=False)
