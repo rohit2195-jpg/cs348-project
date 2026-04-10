@@ -1,0 +1,92 @@
+{
+  "name": "cs348-project-team",
+  "interface": {
+    "displayName": "CS348 Project Team"
+  },
+  "plugins": [
+    {
+      "name": "cs348-team-lead",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cs348-team-lead"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    },
+    {
+      "name": "cs348-code-reviewer",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cs348-code-reviewer"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    },
+    {
+      "name": "cs348-ui-engineer",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cs348-ui-engineer"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    },
+    {
+      "name": "cs348-backend-engineer",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cs348-backend-engineer"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    },
+    {
+      "name": "cs348-bug-fixer",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cs348-bug-fixer"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    },
+    {
+      "name": "cs348-qa-validator",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cs348-qa-validator"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    },
+    {
+      "name": "cs348-trading-specialist",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cs348-trading-specialist"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    }
+  ]
+}

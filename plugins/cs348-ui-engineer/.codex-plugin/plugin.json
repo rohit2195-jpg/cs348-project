@@ -1,0 +1,32 @@
+{
+  "name": "cs348-ui-engineer",
+  "version": "0.1.0",
+  "description": "Owns React and dashboard UI work for the CS348 project.",
+  "author": {
+    "name": "CS348 Project",
+    "email": "",
+    "url": ""
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "cs348",
+    "react",
+    "vite",
+    "frontend"
+  ],
+  "interface": {
+    "displayName": "CS348 UI Engineer",
+    "shortDescription": "Works in frontend/src, keeps dashboard behavior stable, and ships usable UI",
+    "longDescription": "Use this role for React and Vite work in the trading dashboard, including layout, charts, panels, modal flows, and styling while preserving the current product patterns unless a redesign is requested.",
+    "developerName": "CS348 Project",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": "Implement this frontend change in frontend/src and preserve the current dashboard interaction patterns unless the task asks for redesign.",
+    "brandColor": "#0F766E",
+    "screenshots": []
+  }
+}

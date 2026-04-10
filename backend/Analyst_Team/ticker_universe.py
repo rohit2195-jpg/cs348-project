@@ -3,8 +3,9 @@ Analyst_Team/ticker_universe.py
 ══════════════════════════════════════════════════════════════════════════════
 Builds the prioritised ticker list for each analyst run.
 
-Held tickers come from the Portfolio table (symbol, purchasePrice, quantity).
-Candidates come from yfinance screeners ranked by volume/momentum.
+Held tickers come from the Portfolio table.
+Watchlist names are forced in next.
+Fallback candidates come from yfinance screeners ranked by volume/momentum.
 Merged, de-duplicated, and sorted so held stocks always run first.
 ══════════════════════════════════════════════════════════════════════════════
 """
@@ -12,12 +13,12 @@ Merged, de-duplicated, and sorted so held stocks always run first.
 import logging
 from dataclasses import dataclass, field
 import yfinance as yf
-from database import get_portfolio
+from database import get_portfolio, get_watchlist
 
 logger = logging.getLogger(__name__)
 
 MAX_CANDIDATES_PER_SCREENER = 15
-MAX_CANDIDATE_TICKERS       = 30
+MAX_CANDIDATE_TICKERS       = 20
 
 
 @dataclass
@@ -97,7 +98,7 @@ def _fetch_screener(screen_key: str, priority: int, reason_label: str) -> list[T
 
 
 def get_candidate_tickers() -> list[TickerItem]:
-    """Pulls from four screeners, de-dupes, caps at MAX_CANDIDATE_TICKERS."""
+    """Pulls from screeners as a fallback candidate source, not the primary idea engine."""
     raw: list[TickerItem] = []
     raw += _fetch_screener("most_actives", priority=2, reason_label="most active")
     raw += _fetch_screener("day_gainers",  priority=2, reason_label="top gainer")
@@ -116,6 +117,29 @@ def get_candidate_tickers() -> list[TickerItem]:
     return capped
 
 
+def get_watchlist_tickers() -> list[TickerItem]:
+    try:
+        rows = get_watchlist()
+        items = []
+        for row in rows:
+            symbol = (row.get("symbol") or "").upper()
+            if not symbol:
+                continue
+            note = row.get("notes") or "watchlist"
+            items.append(TickerItem(
+                priority=2,
+                score=120.0,
+                ticker=symbol,
+                reason=f"watchlist  {note[:40]}",
+                is_held=False,
+            ))
+        logger.info(f"[universe] Watchlist: {len(items)} ticker(s)")
+        return items
+    except Exception as e:
+        logger.warning(f"[universe] Could not load watchlist: {e}")
+        return []
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def build_ticker_queue(
@@ -131,6 +155,7 @@ def build_ticker_queue(
     held     = get_held_tickers()
     held_set = {t.ticker for t in held}
 
+    watchlist = get_watchlist_tickers()
     candidates = get_candidate_tickers() if include_candidates else []
 
     # Force-include extras (e.g. from watchlist or CLI --tickers flag)
@@ -141,7 +166,7 @@ def build_ticker_queue(
     ]
 
     # Merge: held wins over any candidate with the same ticker
-    all_items = held + extras + [c for c in candidates if c.ticker not in held_set]
+    all_items = held + watchlist + extras + [c for c in candidates if c.ticker not in held_set]
     seen: dict[str, TickerItem] = {}
     for item in all_items:
         if item.ticker not in seen or item.priority < seen[item.ticker].priority:

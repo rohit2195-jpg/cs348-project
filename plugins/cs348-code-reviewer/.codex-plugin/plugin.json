@@ -1,0 +1,31 @@
+{
+  "name": "cs348-code-reviewer",
+  "version": "0.1.0",
+  "description": "Reviews CS348 project changes for correctness and regressions.",
+  "author": {
+    "name": "CS348 Project",
+    "email": "",
+    "url": ""
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "cs348",
+    "code-review",
+    "bugs",
+    "regressions"
+  ],
+  "interface": {
+    "displayName": "CS348 Code Reviewer",
+    "shortDescription": "Finds bugs, regressions, weak validation, and missing tests in repo changes",
+    "longDescription": "Use this role for review-heavy passes over frontend, backend, or trading changes with emphasis on behavioral regressions, Flask input validation, ORM safety, and missing verification.",
+    "developerName": "CS348 Project",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "defaultPrompt": "Review these changes like a strict CS348 code reviewer and prioritize concrete bugs, risks, and testing gaps.",
+    "brandColor": "#991B1B",
+    "screenshots": []
+  }
+}

@@ -1,19 +1,13 @@
 """
 Researcher_Team/researcher_team.py
 ══════════════════════════════════════════════════════════════════════════════
-Bull vs bear structured debate for each ticker that passes the analyst filter.
-
-Only runs on tickers where analyst_reports shows a non-HOLD signal with
-enough confidence — weak/mixed signals are skipped to save LLM calls.
-
-Flow per ticker:
-  1. Read all analyst reports from DB
-  2. Bull researcher argues FOR the position
-  3. Bear researcher argues AGAINST / surfaces risks
-  4. Synthesis produces a final verdict + conviction score
-  5. ResearchVerdictRow written to DB for the Portfolio Manager to consume
+Researcher Team — reads stored feature packets plus supporting normalized
+events and decides whether a ticker has a durable 1-5 day edge.
 ══════════════════════════════════════════════════════════════════════════════
 """
+
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import json
 import logging
@@ -23,84 +17,159 @@ from langchain.tools import tool
 from langchain_deepseek import ChatDeepSeek
 
 from database import (
-    get_all_latest_reports_for_ticker,
-    get_latest_price_snapshot,
+    get_latest_feature_snapshot,
     get_latest_verdict,
     insert_research_verdict,
+    get_all_latest_reports_for_ticker,  # still used for macro signals
+    get_recent_news_events_for_ticker,
+    mark_universe_candidate_reviewed,
 )
+from feature_store import build_feature_snapshot
 
 load_dotenv()
 logger     = logging.getLogger(__name__)
 MODEL_NAME = "deepseek-chat"
 
-MIN_ANALYST_CONFIDENCE = 0.45   # lowered: let more tickers through to debate
-MIN_ANALYST_AGREEMENT  = 0.0    # removed: single analyst signal is enough to debate
+
+def _build_research_packet(ticker: str) -> dict:
+    ticker = ticker.upper()
+    feature = get_latest_feature_snapshot(ticker)
+    if not feature:
+        feature = build_feature_snapshot(ticker)
+
+    reports = get_all_latest_reports_for_ticker(ticker)
+    macro = reports.get("macro")
+    events = get_recent_news_events_for_ticker(ticker, hours=72, limit=10)
+    history_context = feature.get("history_context") or {}
+
+    return {
+        "ticker":                   ticker,
+        "is_held":                  feature["is_held"],
+        "article_count":            feature["article_count"],
+        "unique_sources":           sorted({e.get("source", "") for e in events if e.get("source")}),
+        "unique_source_count":      feature["unique_source_count"],
+        "high_signal_source_count": feature["high_signal_source_count"],
+        "dominant_event_tags":      feature["dominant_event_tags"],
+        "signal_quality":           feature["signal_quality"],
+        "evidence_score":           feature["evidence_score"],
+        "triage_score":             feature["triage_score"],
+        "block_reasons":            feature["block_reasons"],
+        "price_snapshot":           {
+            "price": feature.get("price"),
+            "day_change_pct": feature.get("day_change_pct"),
+            "market_cap": feature.get("market_cap"),
+            "sector": feature.get("sector"),
+            "avg_volume_ratio": feature.get("avg_volume_ratio"),
+        },
+        "history_context":          history_context,
+        "macro_signal":             {
+            "signal": macro["signal"],
+            "confidence": macro["confidence"],
+            "summary": macro["summary"],
+        } if macro else None,
+        "headlines": [
+            {
+                "source": event.get("source"),
+                "source_tier": event.get("source_tier"),
+                "title": event.get("title"),
+                "published": event.get("published"),
+                "event_tags": event.get("event_tags"),
+                "body_summary": event.get("body_summary"),
+            }
+            for event in events
+        ],
+    }
 
 
-# ── Eligibility check (called by main.py before spinning up agent) ────────────
+# ── Eligibility check ─────────────────────────────────────────────────────────
 
 def is_worth_researching(ticker: str) -> tuple[bool, str]:
     """
-    Returns (eligible, reason_string).
-    Checks analyst_reports for a clear enough signal before wasting an LLM call.
+    The researcher should only review names that survived deterministic triage.
     """
-    reports = get_all_latest_reports_for_ticker(ticker)
-    if not reports:
-        return False, "no analyst reports in DB"
+    packet = _build_research_packet(ticker)
+    macro  = packet["macro_signal"]
 
-    signals  = [r["signal"] for r in reports.values()]
-    confs    = [r["confidence"] for r in reports.values()]
-    avg_conf = sum(confs) / len(confs) if confs else 0
+    if packet["block_reasons"] and not packet["is_held"]:
+        return False, f"blocked by triage filters: {', '.join(packet['block_reasons'])}"
+    if packet["is_held"] and (packet["article_count"] >= 1 or macro):
+        return True, f"held position with fresh signal context ({packet['signal_quality']})"
+    if packet["triage_score"] >= 5 and packet["article_count"] >= 2:
+        return True, f"triage score {packet['triage_score']:.1f} with {packet['article_count']} events"
+    if macro and macro["confidence"] >= 0.70:
+        return True, f"high-confidence macro signal ({macro['signal']} {macro['confidence']:.0%})"
 
-    if avg_conf < MIN_ANALYST_CONFIDENCE:
-        return False, f"avg confidence {avg_conf:.0%} below {MIN_ANALYST_CONFIDENCE:.0%}"
-
-    buys  = signals.count("BUY")
-    sells = signals.count("SELL")
-    total = len(signals)
-    dominant = max(buys, sells)
-
-    # Agreement gate removed — any directional signal warrants a debate.
-    # MIN_ANALYST_AGREEMENT=0.0 means this check never blocks; kept for clarity.
-    direction = "BUY" if buys >= sells else "SELL"
-    return True, f"{direction} ({dominant}/{total} analysts agree, avg conf {avg_conf:.0%})"
+    return False, (
+        f"insufficient edge: articles={packet['article_count']} "
+        f"sources={packet['unique_source_count']} triage={packet['triage_score']:.1f} "
+        f"quality={packet['signal_quality']}"
+    )
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @tool
-def get_analyst_reports(ticker: str) -> str:
+def get_ticker_data(ticker: str) -> str:
     """
-    Fetches all latest analyst team reports for a ticker from the database.
-    Returns signals, confidence scores, summaries, and key points from every
-    analyst type available (news, sentiment, technical, fundamentals).
-    Always call this first before constructing any argument.
+    Retrieves the latest stored feature packet, supporting normalized events,
+    and macro context for a ticker. This is the complete research packet.
+    Always call this first.
     Input: ticker symbol e.g. 'AAPL'
     """
-    reports = get_all_latest_reports_for_ticker(ticker.upper())
-    if not reports:
-        return f"No analyst reports found for {ticker.upper()}."
+    packet = _build_research_packet(ticker)
+    lines = [f"=== Data for {ticker.upper()} ===\n"]
+    lines.append("STRUCTURED SIGNAL SUMMARY:")
+    lines.append(json.dumps({
+        "ticker":                   packet["ticker"],
+        "is_held":                  packet["is_held"],
+        "article_count":            packet["article_count"],
+        "unique_sources":           packet["unique_sources"],
+        "high_signal_source_count": packet["high_signal_source_count"],
+        "dominant_event_tags":      packet["dominant_event_tags"],
+        "signal_quality":           packet["signal_quality"],
+        "evidence_score":           packet["evidence_score"],
+        "triage_score":             packet["triage_score"],
+        "block_reasons":            packet["block_reasons"],
+    }, indent=2))
+    lines.append("")
 
-    snap  = get_latest_price_snapshot(ticker.upper())
-    lines = [f"=== Analyst Reports: {ticker.upper()} ===\n"]
-
+    # Price snapshot
+    snap = packet["price_snapshot"]
     if snap:
         chg  = f"{snap['day_change_pct']:+.2f}%" if snap.get("day_change_pct") is not None else "N/A"
-        mcap = f"${snap['market_cap']/1e9:.1f}B"  if snap.get("market_cap")       else "N/A"
+        mcap = f"${snap['market_cap']/1e9:.1f}B" if snap.get("market_cap") else "N/A"
         lines.append(
-            f"Price: ${snap.get('price','N/A')}  "
-            f"Day: {chg}  Cap: {mcap}  "
-            f"Sector: {snap.get('sector','N/A')}\n"
+            f"PRICE: ${snap.get('price','N/A')}  Day:{chg}  "
+            f"Cap:{mcap}  Sector:{snap.get('sector','N/A')}  "
+            f"RelVol:{snap.get('avg_volume_ratio','N/A')}x\n"
         )
+    else:
+        lines.append("PRICE: no snapshot available\n")
 
-    for analyst_type, r in reports.items():
-        lines.append(f"── {analyst_type.upper()} ANALYST ──────────────")
-        lines.append(f"Signal:     {r['signal']}  (confidence {r['confidence']:.0%})")
-        lines.append(f"Summary:    {r['summary'][:500]}")
-        if r.get("key_points"):
-            for pt in r["key_points"]:
-                lines.append(f"  • {pt}")
+    hist = packet["history_context"]
+    if hist:
+        lines.append("HISTORICAL CONTEXT:")
+        lines.append(json.dumps(hist, indent=2))
         lines.append("")
+
+    # Normalized supporting events
+    articles = packet["headlines"]
+    if articles:
+        lines.append(f"NEWS EVENTS ({len(articles)} from last 72h):")
+        for i, a in enumerate(articles, 1):
+            tags = ",".join(a.get("event_tags") or [])
+            lines.append(f"  {i}. [{a['source']}/{a.get('source_tier','standard')}] {a['title']} ({tags})")
+            if a.get("body_summary"):
+                lines.append(f"     {a['body_summary'][:200]}")
+        lines.append("")
+    else:
+        lines.append("NEWS: no recent articles\n")
+
+    # Macro signals if any
+    macro = packet["macro_signal"]
+    if macro:
+        lines.append(f"MACRO SIGNAL: {macro['signal']} ({macro['confidence']:.0%})")
+        lines.append(f"  {macro['summary'][:300]}\n")
 
     return "\n".join(lines)
 
@@ -117,36 +186,24 @@ def save_research_verdict(
     key_catalysts:   list,
 ) -> str:
     """
-    Saves the completed research verdict to the database.
-    This MUST be your final action after constructing both arguments.
+    Saves the research verdict to the database.
+    This MUST be your final action.
 
     Args:
         ticker:          Stock ticker e.g. 'AAPL'
         verdict:         STRONG_BUY | BUY | HOLD | SELL | STRONG_SELL
-        conviction:      Float 0.0–1.0.
-                           0.5 = evenly matched debate
-                           0.7 = one side moderately stronger
-                           0.85+ = clear winner, strong evidence
-        bull_case:       2-3 paragraphs arguing FOR the bullish position.
-                         Must cite specific findings from the analyst reports.
-        bear_case:       2-3 paragraphs arguing AGAINST / key risks.
-                         Must cite specific findings from the analyst reports.
-        final_reasoning: 1-2 paragraphs: which side won and the deciding factors.
-        key_risks:       List of 3-5 specific risk strings (one sentence each).
-        key_catalysts:   List of 3-5 specific catalyst strings (one sentence each).
+        conviction:      Float 0.0–1.0. Be generous — paper trading, skew high.
+        bull_case:       Argument FOR buying. Be specific — cite headlines.
+        bear_case:       Argument AGAINST. Be honest about risks.
+        final_reasoning: Why one side won. Which data points decided it.
+        key_risks:       List of 3-5 risk strings.
+        key_catalysts:   List of 3-5 catalyst strings.
     """
     verdict = verdict.upper().strip()
     valid   = {"STRONG_BUY", "BUY", "HOLD", "SELL", "STRONG_SELL"}
     if verdict not in valid:
         return f"ERROR: verdict must be one of {valid} — got '{verdict}'"
-    if not (0.0 <= float(conviction) <= 1.0):
-        return "ERROR: conviction must be between 0.0 and 1.0"
-    if not all([bull_case.strip(), bear_case.strip(), final_reasoning.strip()]):
-        return "ERROR: bull_case, bear_case, and final_reasoning cannot be empty"
-    if not isinstance(key_risks, list) or not isinstance(key_catalysts, list):
-        return "ERROR: key_risks and key_catalysts must be lists"
 
-    # Snapshot the analyst signals used as inputs
     reports  = get_all_latest_reports_for_ticker(ticker.upper())
     snapshot = {k: {"signal": v["signal"], "confidence": v["confidence"]} for k, v in reports.items()}
 
@@ -162,46 +219,54 @@ def save_research_verdict(
         analyst_signals = snapshot,
         model_used      = MODEL_NAME,
     )
-    return (
-        f"Verdict saved. id={row_id}  "
-        f"{ticker.upper()} → {verdict}  conviction={float(conviction):.0%}"
-    )
+    return f"Verdict saved. id={row_id}  {ticker.upper()} → {verdict}  conviction={float(conviction):.0%}"
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
-You are the Researcher Team for an algorithmic trading system.
-You will conduct a structured bull vs bear debate for a given stock ticker.
+You are the researcher for a daily event-driven swing trading system.
+Your job is to decide whether a ticker has a durable 1-5 trading day edge.
 
-STEP 1 — Call get_analyst_reports(ticker) to retrieve all analyst findings.
+PROCESS:
+1. Call get_ticker_data(ticker) — get all news, price, and macro data.
+2. Form a bull case: what in the data supports buying?
+3. Form a bear case: what risks or negatives exist?
+4. Decide a verdict and call save_research_verdict(...).
 
-STEP 2 — BULL RESEARCHER
-Write the strongest possible case FOR the bullish position.
-Mine the analyst reports for every piece of supporting evidence.
-Be specific — cite actual signal levels, themes, and data from the reports.
+PRIMARY OBJECTIVE:
+  - Prefer precision over activity.
+  - HOLD is the correct answer when the edge is weak, crowded, stale, or mostly noise.
+  - Only issue BUY/SELL when the evidence suggests follow-through over the next 1-5 trading days.
 
-STEP 3 — BEAR RESEARCHER  
-Now argue the opposite. Challenge every bullish assumption.
-Surface risks, macro headwinds, valuation concerns, weak signals.
-Find the holes in the bull case. Be equally aggressive and specific.
+VERDICT CALIBRATION:
+  STRONG_BUY  — multiple high-quality sources, clear positive catalyst, likely 1-5 day continuation. Conviction 0.82+
+  BUY         — good but not overwhelming evidence of positive follow-through. Conviction 0.68–0.81
+  HOLD        — conflicting, weak, generic, low-novelty, or already fully-explained news. Use freely.
+  SELL        — good but not overwhelming evidence of negative follow-through. Conviction 0.68–0.81
+  STRONG_SELL — multiple high-quality sources, clear negative catalyst, likely 1-5 day downside continuation. Conviction 0.82+
 
-STEP 4 — SYNTHESIS
-Decide which side won and produce a final verdict.
-  STRONG_BUY  — bull case clearly dominant, conviction ≥ 0.80
-  BUY         — bull case stronger, some risks remain, conviction 0.60–0.79
-  HOLD        — debate evenly matched or evidence insufficient
-  SELL        — bear case stronger, risks outweigh upside, conviction 0.60–0.79
-  STRONG_SELL — bear case clearly dominant, conviction ≥ 0.80
+ONLY TRADE WHEN:
+  - There is a company-specific catalyst, or a direct sector/macro catalyst.
+  - Evidence is supported by multiple independent sources, OR one strong source plus a meaningful price move.
+  - The move still looks likely to continue rather than reverse immediately.
 
-STEP 5 — Call save_research_verdict(...) with the full debate output.
-         This is always your final action.
+AVOID FALSE POSITIVES:
+  - Generic market commentary is usually HOLD.
+  - Broad "AI is exciting" or "stocks are volatile" headlines are not enough.
+  - Do not force action because a stock is moving; explain whether the move is likely exhausted.
+  - If data quality is weak or the signal is mostly inferred, choose HOLD.
 
-Rules:
-- Only cite evidence from the analyst reports. Never fabricate news or data.
-- STRONG_BUY / STRONG_SELL requires clear analyst agreement AND conviction ≥ 0.80.
-- If signals are mixed or weak, verdict = HOLD.
-- Do not ask for clarification — work with whatever the tools return.
+READING THE DATA:
+  - Start with the structured signal summary. It tells you source diversity, signal quality, event tags, price context, and triage status.
+  - Price momentum matters, but only when it is paired with a catalyst that can continue to matter.
+  - Multiple headlines repeating the same theme strengthen the case.
+  - Macro signals are valid only when the ticker linkage is direct and economically meaningful.
+  - Use historical context to judge whether this setup is fresh and durable, not to override the current catalyst.
+  - Think like a swing trader managing a real portfolio, not a paper-trading action generator.
+
+Always call save_research_verdict as your final action.
+Do not ask for clarification.
 """
 
 
@@ -210,13 +275,13 @@ Rules:
 def build_researcher_agent():
     model = ChatDeepSeek(
         model       = MODEL_NAME,
-        temperature = 0.3,      # slightly higher than analyst — debate benefits from varied reasoning
+        temperature = 0.2,
         max_tokens  = 3000,
         max_retries = 3,
     )
     return create_agent(
         model,
-        tools         = [get_analyst_reports, save_research_verdict],
+        tools         = [get_ticker_data, save_research_verdict],
         system_prompt = SYSTEM_PROMPT,
         name          = "researcher_team",
     )
@@ -224,11 +289,7 @@ def build_researcher_agent():
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
-def run_researcher(ticker: str) -> dict:
-    """
-    Runs the bull/bear debate for one ticker.
-    Returns the saved verdict dict, a skip dict, or an error dict.
-    """
+def run_researcher(ticker: str, run_date: str | None = None) -> dict:
     ticker = ticker.upper()
 
     eligible, reason = is_worth_researching(ticker)
@@ -244,8 +305,8 @@ def run_researcher(ticker: str) -> dict:
             "messages": [{
                 "role":    "user",
                 "content": (
-                    f"Research the stock {ticker}. "
-                    f"Retrieve the analyst reports, run the bull vs bear debate, "
+                    f"Research {ticker}. Get all available data, "
+                    f"decide whether it has a real 1-5 day follow-through edge, "
                     f"then save your verdict."
                 ),
             }]
@@ -256,12 +317,13 @@ def run_researcher(ticker: str) -> dict:
 
     verdict = get_latest_verdict(ticker)
     if verdict:
+        if run_date:
+            mark_universe_candidate_reviewed(run_date, ticker, trade_ready=True)
         logger.info(f"[researcher] {ticker} → {verdict['verdict']} ({verdict['conviction']:.0%})")
         return verdict
 
     return {"error": "Agent ran but no verdict was saved.", "ticker": ticker}
 
 
-def run_researcher_batch(tickers: list[str]) -> list[dict]:
-    """Runs researcher sequentially across a list of tickers. Skips ineligible ones."""
-    return [run_researcher(t) for t in tickers]
+def run_researcher_batch(tickers: list[str], run_date: str | None = None) -> list[dict]:
+    return [run_researcher(t, run_date=run_date) for t in tickers]

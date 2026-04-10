@@ -1,0 +1,8 @@
+interface:
+  display_name: "CS348 Trading Specialist"
+  short_description: "Trading owner for Alpaca, order flow, quotes, and portfolio math"
+  brand_color: "#7C3AED"
+  default_prompt: "Use $cs348-trading-specialist for Alpaca integration, order lifecycle, quote, chart, or portfolio-logic work in this repo."
+
+policy:
+  allow_implicit_invocation: false

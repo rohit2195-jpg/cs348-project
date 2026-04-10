@@ -1,0 +1,32 @@
+{
+  "name": "cs348-backend-engineer",
+  "version": "0.1.0",
+  "description": "Owns Flask, validation, and ORM-backed backend work for the CS348 project.",
+  "author": {
+    "name": "CS348 Project",
+    "email": "",
+    "url": ""
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "cs348",
+    "flask",
+    "sqlalchemy",
+    "backend"
+  ],
+  "interface": {
+    "displayName": "CS348 Backend Engineer",
+    "shortDescription": "Works in backend/, validates inputs, and keeps ORM and API boundaries clean",
+    "longDescription": "Use this role for Flask routes, request validation, SQLAlchemy persistence, API shape changes, and server behavior in the active backend paths.",
+    "developerName": "CS348 Project",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": "Implement this backend change in the active backend paths and keep request validation at the Flask boundary with ORM-backed persistence.",
+    "brandColor": "#1D4ED8",
+    "screenshots": []
+  }
+}

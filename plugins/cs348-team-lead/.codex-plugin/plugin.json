@@ -1,0 +1,32 @@
+{
+  "name": "cs348-team-lead",
+  "version": "0.1.0",
+  "description": "Coordinates work across the CS348 trading simulator team.",
+  "author": {
+    "name": "CS348 Project",
+    "email": "",
+    "url": ""
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "cs348",
+    "coordination",
+    "project-management",
+    "full-stack"
+  ],
+  "interface": {
+    "displayName": "CS348 Team Lead",
+    "shortDescription": "Plans work, splits ownership, and coordinates frontend, backend, review, and QA",
+    "longDescription": "Use this role to break tasks into concrete slices for the stock trading simulator, assign the right specialist, and keep frontend, backend, validation, and trading-domain concerns aligned.",
+    "developerName": "CS348 Project",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": "Coordinate this CS348 task, split it into owner-sized work, and decide which specialist should handle each part.",
+    "brandColor": "#1F2937",
+    "screenshots": []
+  }
+}

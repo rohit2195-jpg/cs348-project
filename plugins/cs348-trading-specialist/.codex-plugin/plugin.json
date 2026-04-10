@@ -1,0 +1,32 @@
+{
+  "name": "cs348-trading-specialist",
+  "version": "0.1.0",
+  "description": "Handles Alpaca and market-data logic for the CS348 trading simulator.",
+  "author": {
+    "name": "CS348 Project",
+    "email": "",
+    "url": ""
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "cs348",
+    "alpaca",
+    "trading",
+    "market-data"
+  ],
+  "interface": {
+    "displayName": "CS348 Trading Specialist",
+    "shortDescription": "Owns Alpaca, quotes, order flow, portfolio math, and market-data edge cases",
+    "longDescription": "Use this role for changes touching trading.py, order lifecycle behavior, quote and chart fallbacks, portfolio calculations, and broker-specific behavior in the simulator.",
+    "developerName": "CS348 Project",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": "Handle this trading-domain change in the CS348 repo, with attention to Alpaca behavior, quote reliability, fills, and portfolio calculations.",
+    "brandColor": "#7C3AED",
+    "screenshots": []
+  }
+}

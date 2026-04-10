@@ -122,6 +122,101 @@ class PriceSnapshot(Base):
 Index("ix_price_snapshots_ticker", PriceSnapshot.ticker)
 
 
+class NewsEvent(Base):
+    __tablename__ = "news_events"
+    id            = Column(Integer,      primary_key=True, autoincrement=True)
+    raw_news_id    = Column(Integer,     nullable=False, unique=True)
+    ticker         = Column(String(10),  nullable=False)
+    source         = Column(String(50),  nullable=False)
+    source_tier    = Column(String(20),  nullable=False, default="standard")
+    title          = Column(String(500), nullable=False)
+    url            = Column(String(1000), nullable=True)
+    published      = Column(String(50),  nullable=True)
+    body_summary   = Column(Text,        nullable=True)
+    event_tags     = Column(Text,        nullable=True)   # JSON list
+    novelty_key    = Column(String(64),  nullable=False)
+    collected_at   = Column(DateTime,    default=datetime.utcnow)
+
+Index("ix_news_events_ticker_time", NewsEvent.ticker, NewsEvent.collected_at)
+Index("ix_news_events_ticker_novelty", NewsEvent.ticker, NewsEvent.novelty_key)
+
+
+class TickerFeatureSnapshot(Base):
+    __tablename__ = "ticker_feature_snapshots"
+    id                      = Column(Integer,     primary_key=True, autoincrement=True)
+    run_date                = Column(String(10),  nullable=False)
+    ticker                  = Column(String(10),  nullable=False)
+    is_held                 = Column(Integer,     nullable=False, default=0)
+    article_count           = Column(Integer,     nullable=False, default=0)
+    unique_source_count     = Column(Integer,     nullable=False, default=0)
+    high_signal_source_count = Column(Integer,    nullable=False, default=0)
+    dominant_event_tags     = Column(Text,        nullable=True)   # JSON list
+    signal_quality          = Column(String(20),  nullable=False, default="weak")
+    evidence_score          = Column(Float,       nullable=False, default=0.0)
+    triage_score            = Column(Float,       nullable=False, default=0.0)
+    block_reasons           = Column(Text,        nullable=True)   # JSON list
+    candidate_sources       = Column(Text,        nullable=True)   # JSON list
+    price                   = Column(Float,       nullable=True)
+    day_change_pct          = Column(Float,       nullable=True)
+    avg_volume_ratio        = Column(Float,       nullable=True)
+    market_cap              = Column(Float,       nullable=True)
+    sector                  = Column(String(100), nullable=True)
+    history_context         = Column(Text,        nullable=True)   # JSON object
+    feature_json            = Column(Text,        nullable=True)   # JSON object
+    created_at              = Column(DateTime,    default=datetime.utcnow)
+
+Index("ix_feature_snapshots_run_ticker", TickerFeatureSnapshot.run_date, TickerFeatureSnapshot.ticker)
+Index("ix_feature_snapshots_ticker_created", TickerFeatureSnapshot.ticker, TickerFeatureSnapshot.created_at)
+
+
+class UniverseCandidate(Base):
+    __tablename__ = "universe_candidates"
+    id               = Column(Integer,     primary_key=True, autoincrement=True)
+    run_date         = Column(String(10),  nullable=False)
+    ticker           = Column(String(10),  nullable=False)
+    candidate_source = Column(String(30),  nullable=False)
+    score            = Column(Float,       nullable=False, default=0.0)
+    reason           = Column(Text,        nullable=True)
+    is_held          = Column(Integer,     nullable=False, default=0)
+    triage_status    = Column(String(20),  nullable=False, default="filtered")
+    llm_reviewed     = Column(Integer,     nullable=False, default=0)
+    trade_ready      = Column(Integer,     nullable=False, default=0)
+    skip_reason      = Column(Text,        nullable=True)
+    created_at       = Column(DateTime,    default=datetime.utcnow)
+
+Index("ix_universe_candidates_run_ticker", UniverseCandidate.run_date, UniverseCandidate.ticker)
+Index("ix_universe_candidates_run_status", UniverseCandidate.run_date, UniverseCandidate.triage_status, UniverseCandidate.trade_ready)
+
+
+class SimulationRun(Base):
+    __tablename__ = "simulation_runs"
+    id            = Column(Integer,     primary_key=True, autoincrement=True)
+    start_date    = Column(String(10),  nullable=False)
+    end_date      = Column(String(10),  nullable=False)
+    initial_cash  = Column(Float,       nullable=False)
+    ending_cash   = Column(Float,       nullable=False, default=0.0)
+    ending_equity = Column(Float,       nullable=False, default=0.0)
+    metrics_json  = Column(Text,        nullable=True)
+    created_at    = Column(DateTime,    default=datetime.utcnow)
+
+
+class SimulationPosition(Base):
+    __tablename__ = "simulation_positions"
+    id                = Column(Integer,     primary_key=True, autoincrement=True)
+    simulation_run_id = Column(Integer,     nullable=False)
+    trade_date        = Column(String(10),  nullable=False)
+    ticker            = Column(String(10),  nullable=False)
+    action            = Column(String(10),  nullable=False)
+    quantity          = Column(Integer,     nullable=False, default=0)
+    price             = Column(Float,       nullable=False, default=0.0)
+    cash_after        = Column(Float,       nullable=False, default=0.0)
+    equity_after      = Column(Float,       nullable=False, default=0.0)
+    notes             = Column(Text,        nullable=True)
+    created_at        = Column(DateTime,    default=datetime.utcnow)
+
+Index("ix_simulation_positions_run_date", SimulationPosition.simulation_run_id, SimulationPosition.trade_date)
+
+
 # ── NEW: Researcher Team output ───────────────────────────────────────────────
 
 class ResearchVerdict(enum.Enum):
@@ -692,6 +787,105 @@ def insert_price_snapshot(ticker: str, data: dict) -> None:
         session.close()
 
 
+def get_recent_raw_news_rows_for_ticker(ticker: str, hours: int = 48, limit: int = 50) -> list[dict]:
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(RawNews)
+            .filter(RawNews.ticker == ticker.upper(), RawNews.collected_at >= cutoff)
+            .order_by(RawNews.collected_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id":           r.id,
+                "ticker":       r.ticker,
+                "source":       r.source,
+                "title":        r.title,
+                "url":          r.url,
+                "published":    r.published,
+                "body_summary": r.body_summary,
+                "collected_at": r.collected_at.isoformat(),
+            }
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
+def insert_or_ignore_news_event(
+    raw_news_id: int,
+    ticker: str,
+    source: str,
+    source_tier: str,
+    title: str,
+    url: str | None,
+    published: str | None,
+    body_summary: str | None,
+    event_tags: list[str],
+    novelty_key: str,
+    collected_at: str | None = None,
+) -> int | None:
+    session = SessionLocal()
+    try:
+        exists = session.query(NewsEvent).filter(NewsEvent.raw_news_id == raw_news_id).first()
+        if exists:
+            return exists.id
+
+        row = NewsEvent(
+            raw_news_id  = raw_news_id,
+            ticker       = ticker.upper(),
+            source       = source,
+            source_tier  = source_tier,
+            title        = title,
+            url          = url,
+            published    = published,
+            body_summary = body_summary,
+            event_tags   = json.dumps(event_tags or []),
+            novelty_key  = novelty_key,
+            collected_at = datetime.fromisoformat(collected_at) if collected_at else datetime.utcnow(),
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return row.id
+    finally:
+        session.close()
+
+
+def get_recent_news_events_for_ticker(ticker: str, hours: int = 72, limit: int = 30) -> list[dict]:
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(NewsEvent)
+            .filter(NewsEvent.ticker == ticker.upper(), NewsEvent.collected_at >= cutoff)
+            .order_by(NewsEvent.collected_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id":           r.id,
+                "ticker":       r.ticker,
+                "source":       r.source,
+                "source_tier":  r.source_tier,
+                "title":        r.title,
+                "url":          r.url,
+                "published":    r.published,
+                "body_summary": r.body_summary,
+                "event_tags":   json.loads(r.event_tags or "[]"),
+                "novelty_key":  r.novelty_key,
+                "collected_at": r.collected_at.isoformat(),
+            }
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
 def get_latest_reports(
     ticker:       str,
     analyst_type: str | None = None,
@@ -781,6 +975,194 @@ def get_latest_price_snapshot(ticker: str) -> dict | None:
             "sector":         row.sector,
             "snapshot_at":    row.snapshot_at.isoformat(),
         }
+    finally:
+        session.close()
+
+
+def upsert_feature_snapshot(
+    run_date: str,
+    ticker: str,
+    *,
+    is_held: bool,
+    article_count: int,
+    unique_source_count: int,
+    high_signal_source_count: int,
+    dominant_event_tags: list[str],
+    signal_quality: str,
+    evidence_score: float,
+    triage_score: float,
+    block_reasons: list[str],
+    candidate_sources: list[str],
+    price: float | None,
+    day_change_pct: float | None,
+    avg_volume_ratio: float | None,
+    market_cap: float | None,
+    sector: str | None,
+    history_context: dict | None,
+    feature_json: dict | None,
+) -> int:
+    session = SessionLocal()
+    try:
+        row = (
+            session.query(TickerFeatureSnapshot)
+            .filter(
+                TickerFeatureSnapshot.run_date == run_date,
+                TickerFeatureSnapshot.ticker == ticker.upper(),
+            )
+            .order_by(TickerFeatureSnapshot.created_at.desc())
+            .first()
+        )
+        if not row:
+            row = TickerFeatureSnapshot(run_date=run_date, ticker=ticker.upper())
+            session.add(row)
+
+        row.is_held                  = 1 if is_held else 0
+        row.article_count            = article_count
+        row.unique_source_count      = unique_source_count
+        row.high_signal_source_count = high_signal_source_count
+        row.dominant_event_tags      = json.dumps(dominant_event_tags or [])
+        row.signal_quality           = signal_quality
+        row.evidence_score           = round(float(evidence_score), 4)
+        row.triage_score             = round(float(triage_score), 4)
+        row.block_reasons            = json.dumps(block_reasons or [])
+        row.candidate_sources        = json.dumps(candidate_sources or [])
+        row.price                    = price
+        row.day_change_pct           = day_change_pct
+        row.avg_volume_ratio         = avg_volume_ratio
+        row.market_cap               = market_cap
+        row.sector                   = sector
+        row.history_context          = json.dumps(history_context or {})
+        row.feature_json             = json.dumps(feature_json or {})
+        session.commit()
+        session.refresh(row)
+        return row.id
+    finally:
+        session.close()
+
+
+def get_latest_feature_snapshot(ticker: str, run_date: str | None = None) -> dict | None:
+    session = SessionLocal()
+    try:
+        q = session.query(TickerFeatureSnapshot).filter(TickerFeatureSnapshot.ticker == ticker.upper())
+        if run_date:
+            q = q.filter(TickerFeatureSnapshot.run_date == run_date)
+        row = q.order_by(TickerFeatureSnapshot.created_at.desc()).first()
+        return _feature_snapshot_to_dict(row) if row else None
+    finally:
+        session.close()
+
+
+def get_feature_snapshots_for_run(run_date: str) -> list[dict]:
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(TickerFeatureSnapshot)
+            .filter(TickerFeatureSnapshot.run_date == run_date)
+            .order_by(TickerFeatureSnapshot.triage_score.desc(), TickerFeatureSnapshot.ticker.asc())
+            .all()
+        )
+        return [_feature_snapshot_to_dict(r) for r in rows]
+    finally:
+        session.close()
+
+
+def _feature_snapshot_to_dict(row: TickerFeatureSnapshot) -> dict:
+    return {
+        "id":                      row.id,
+        "run_date":                row.run_date,
+        "ticker":                  row.ticker,
+        "is_held":                 bool(row.is_held),
+        "article_count":           row.article_count,
+        "unique_source_count":     row.unique_source_count,
+        "high_signal_source_count": row.high_signal_source_count,
+        "dominant_event_tags":     json.loads(row.dominant_event_tags or "[]"),
+        "signal_quality":          row.signal_quality,
+        "evidence_score":          row.evidence_score,
+        "triage_score":            row.triage_score,
+        "block_reasons":           json.loads(row.block_reasons or "[]"),
+        "candidate_sources":       json.loads(row.candidate_sources or "[]"),
+        "price":                   row.price,
+        "day_change_pct":          row.day_change_pct,
+        "avg_volume_ratio":        row.avg_volume_ratio,
+        "market_cap":              row.market_cap,
+        "sector":                  row.sector,
+        "history_context":         json.loads(row.history_context or "{}"),
+        "feature_json":            json.loads(row.feature_json or "{}"),
+        "created_at":              row.created_at.isoformat(),
+    }
+
+
+def replace_universe_candidates(run_date: str, candidates: list[dict]) -> None:
+    session = SessionLocal()
+    try:
+        session.query(UniverseCandidate).filter(UniverseCandidate.run_date == run_date).delete()
+        for item in candidates:
+            session.add(UniverseCandidate(
+                run_date         = run_date,
+                ticker           = item["ticker"].upper(),
+                candidate_source = item.get("candidate_source", "feature_store"),
+                score            = round(float(item.get("score", 0.0)), 4),
+                reason           = item.get("reason"),
+                is_held          = 1 if item.get("is_held") else 0,
+                triage_status    = item.get("triage_status", "filtered"),
+                llm_reviewed     = 1 if item.get("llm_reviewed") else 0,
+                trade_ready      = 1 if item.get("trade_ready") else 0,
+                skip_reason      = item.get("skip_reason"),
+            ))
+        session.commit()
+    finally:
+        session.close()
+
+
+def mark_universe_candidate_reviewed(run_date: str, ticker: str, *, trade_ready: bool = True) -> None:
+    session = SessionLocal()
+    try:
+        row = (
+            session.query(UniverseCandidate)
+            .filter(
+                UniverseCandidate.run_date == run_date,
+                UniverseCandidate.ticker == ticker.upper(),
+            )
+            .order_by(UniverseCandidate.created_at.desc())
+            .first()
+        )
+        if row:
+            row.llm_reviewed = 1
+            row.trade_ready  = 1 if trade_ready else 0
+            session.commit()
+    finally:
+        session.close()
+
+
+def get_latest_universe_run_date() -> str | None:
+    session = SessionLocal()
+    try:
+        row = (
+            session.query(UniverseCandidate.run_date)
+            .order_by(UniverseCandidate.run_date.desc())
+            .first()
+        )
+        return row.run_date if row else None
+    finally:
+        session.close()
+
+
+def get_trade_ready_tickers(run_date: str | None = None) -> set[str]:
+    session = SessionLocal()
+    try:
+        target_run = run_date or get_latest_universe_run_date()
+        if not target_run:
+            return set()
+        rows = (
+            session.query(UniverseCandidate.ticker)
+            .filter(
+                UniverseCandidate.run_date == target_run,
+                UniverseCandidate.trade_ready == 1,
+                UniverseCandidate.llm_reviewed == 1,
+            )
+            .all()
+        )
+        return {r.ticker for r in rows}
     finally:
         session.close()
 
@@ -925,6 +1307,32 @@ Index("ix_trade_decisions_created", TradeDecision.created_at)
 Base.metadata.create_all(bind=engine)
 
 
+class SignalEvaluation(Base):
+    __tablename__ = "signal_evaluations"
+    id                     = Column(Integer,     primary_key=True, autoincrement=True)
+    source_type            = Column(String(20),  nullable=False)   # "verdict" | "trade"
+    source_id              = Column(Integer,     nullable=False)
+    ticker                 = Column(String(10),  nullable=False)
+    direction              = Column(String(10),  nullable=False)   # "BUY" | "SELL"
+    horizon_days           = Column(Integer,     nullable=False)
+    reference_date         = Column(String(10),  nullable=False)
+    reference_price        = Column(Float,       nullable=False)
+    evaluation_date        = Column(String(10),  nullable=False)
+    evaluation_price       = Column(Float,       nullable=False)
+    raw_return_pct         = Column(Float,       nullable=False)
+    benchmark_return_pct   = Column(Float,       nullable=False)
+    thesis_return_pct      = Column(Float,       nullable=False)
+    excess_return_pct      = Column(Float,       nullable=False)
+    outcome                = Column(String(20),  nullable=False)   # "win" | "loss" | "flat"
+    notes                  = Column(Text,        nullable=True)
+    evaluated_at           = Column(DateTime,    default=datetime.utcnow)
+
+Index("ix_signal_evaluations_source", SignalEvaluation.source_type, SignalEvaluation.source_id, SignalEvaluation.horizon_days)
+Index("ix_signal_evaluations_ticker", SignalEvaluation.ticker, SignalEvaluation.evaluated_at)
+
+Base.metadata.create_all(bind=engine)
+
+
 def insert_trade_decision(
     ticker:     str,
     action:     str,
@@ -954,6 +1362,26 @@ def insert_trade_decision(
         session.commit()
         session.refresh(row)
         return row.id
+    finally:
+        session.close()
+
+
+def get_trade_decisions_for_evaluation(days: int = 30) -> list[dict]:
+    """Returns filled BUY/SELL trade decisions for evaluation."""
+    cutoff  = datetime.utcnow() - timedelta(days=days)
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(TradeDecision)
+            .filter(
+                TradeDecision.created_at >= cutoff,
+                TradeDecision.status == "filled",
+                TradeDecision.action.in_(["BUY", "SELL"]),
+            )
+            .order_by(TradeDecision.created_at.desc())
+            .all()
+        )
+        return [_decision_to_dict(r) for r in rows]
     finally:
         session.close()
 
@@ -1001,3 +1429,227 @@ def _decision_to_dict(r: TradeDecision) -> dict:
         "status":     r.status,
         "created_at": r.created_at.isoformat(),
     }
+
+
+def get_research_verdicts_for_evaluation(days: int = 30) -> list[dict]:
+    """Returns recent non-HOLD research verdicts for ex-post evaluation."""
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(ResearchVerdictRow)
+            .filter(
+                ResearchVerdictRow.created_at >= cutoff,
+                ResearchVerdictRow.verdict != ResearchVerdict.HOLD,
+            )
+            .order_by(ResearchVerdictRow.created_at.desc())
+            .all()
+        )
+        return [_verdict_to_dict(r) for r in rows]
+    finally:
+        session.close()
+
+
+def get_existing_signal_evaluations(source_type: str) -> set[tuple[int, int]]:
+    """
+    Returns {(source_id, horizon_days)} for the given source type.
+    Used to avoid inserting duplicate evaluations.
+    """
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(SignalEvaluation.source_id, SignalEvaluation.horizon_days)
+            .filter(SignalEvaluation.source_type == source_type)
+            .all()
+        )
+        return {(row.source_id, row.horizon_days) for row in rows}
+    finally:
+        session.close()
+
+
+def insert_signal_evaluation(
+    source_type: str,
+    source_id: int,
+    ticker: str,
+    direction: str,
+    horizon_days: int,
+    reference_date: str,
+    reference_price: float,
+    evaluation_date: str,
+    evaluation_price: float,
+    raw_return_pct: float,
+    benchmark_return_pct: float,
+    thesis_return_pct: float,
+    excess_return_pct: float,
+    outcome: str,
+    notes: str | None = None,
+) -> int:
+    session = SessionLocal()
+    try:
+        row = SignalEvaluation(
+            source_type          = source_type,
+            source_id            = source_id,
+            ticker               = ticker.upper(),
+            direction            = direction.upper(),
+            horizon_days         = horizon_days,
+            reference_date       = reference_date,
+            reference_price      = reference_price,
+            evaluation_date      = evaluation_date,
+            evaluation_price     = evaluation_price,
+            raw_return_pct       = raw_return_pct,
+            benchmark_return_pct = benchmark_return_pct,
+            thesis_return_pct    = thesis_return_pct,
+            excess_return_pct    = excess_return_pct,
+            outcome              = outcome,
+            notes                = notes,
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return row.id
+    finally:
+        session.close()
+
+
+def get_recent_signal_evaluations(days: int = 30) -> list[dict]:
+    cutoff  = datetime.utcnow() - timedelta(days=days)
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(SignalEvaluation)
+            .filter(SignalEvaluation.evaluated_at >= cutoff)
+            .order_by(SignalEvaluation.evaluated_at.desc())
+            .all()
+        )
+        return [
+            {
+                "id":                   r.id,
+                "source_type":          r.source_type,
+                "source_id":            r.source_id,
+                "ticker":               r.ticker,
+                "direction":            r.direction,
+                "horizon_days":         r.horizon_days,
+                "reference_date":       r.reference_date,
+                "reference_price":      r.reference_price,
+                "evaluation_date":      r.evaluation_date,
+                "evaluation_price":     r.evaluation_price,
+                "raw_return_pct":       r.raw_return_pct,
+                "benchmark_return_pct": r.benchmark_return_pct,
+                "thesis_return_pct":    r.thesis_return_pct,
+                "excess_return_pct":    r.excess_return_pct,
+                "outcome":              r.outcome,
+                "notes":                r.notes,
+                "evaluated_at":         r.evaluated_at.isoformat(),
+            }
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
+def get_feature_snapshots_between_dates(start_date: str, end_date: str) -> list[dict]:
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(TickerFeatureSnapshot)
+            .filter(
+                TickerFeatureSnapshot.run_date >= start_date,
+                TickerFeatureSnapshot.run_date <= end_date,
+            )
+            .order_by(TickerFeatureSnapshot.run_date.asc(), TickerFeatureSnapshot.triage_score.desc())
+            .all()
+        )
+        return [_feature_snapshot_to_dict(r) for r in rows]
+    finally:
+        session.close()
+
+
+def get_actionable_verdicts_for_date(run_date: str, min_conviction: float = 0.68) -> list[dict]:
+    start_dt = datetime.fromisoformat(run_date)
+    end_dt = start_dt + timedelta(days=1)
+    action_values = [
+        ResearchVerdict.STRONG_BUY,
+        ResearchVerdict.BUY,
+        ResearchVerdict.SELL,
+        ResearchVerdict.STRONG_SELL,
+    ]
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(ResearchVerdictRow)
+            .filter(
+                ResearchVerdictRow.created_at >= start_dt,
+                ResearchVerdictRow.created_at < end_dt,
+                ResearchVerdictRow.conviction >= min_conviction,
+                ResearchVerdictRow.verdict.in_(action_values),
+            )
+            .order_by(ResearchVerdictRow.conviction.desc())
+            .all()
+        )
+        return [_verdict_to_dict(r) for r in rows]
+    finally:
+        session.close()
+
+
+def insert_simulation_run(start_date: str, end_date: str, initial_cash: float) -> int:
+    session = SessionLocal()
+    try:
+        row = SimulationRun(
+            start_date=start_date,
+            end_date=end_date,
+            initial_cash=initial_cash,
+            ending_cash=initial_cash,
+            ending_equity=initial_cash,
+            metrics_json=json.dumps({}),
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return row.id
+    finally:
+        session.close()
+
+
+def update_simulation_run(simulation_run_id: int, ending_cash: float, ending_equity: float, metrics: dict) -> None:
+    session = SessionLocal()
+    try:
+        row = session.query(SimulationRun).filter(SimulationRun.id == simulation_run_id).first()
+        if row:
+            row.ending_cash = ending_cash
+            row.ending_equity = ending_equity
+            row.metrics_json = json.dumps(metrics or {})
+            session.commit()
+    finally:
+        session.close()
+
+
+def insert_simulation_position(
+    simulation_run_id: int,
+    trade_date: str,
+    ticker: str,
+    action: str,
+    quantity: int,
+    price: float,
+    cash_after: float,
+    equity_after: float,
+    notes: str | None = None,
+) -> int:
+    session = SessionLocal()
+    try:
+        row = SimulationPosition(
+            simulation_run_id=simulation_run_id,
+            trade_date=trade_date,
+            ticker=ticker.upper(),
+            action=action.upper(),
+            quantity=quantity,
+            price=price,
+            cash_after=cash_after,
+            equity_after=equity_after,
+            notes=notes,
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return row.id
+    finally:
+        session.close()

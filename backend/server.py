@@ -21,6 +21,17 @@ import time
 
 import database as db
 import trading
+from validation import (
+    ValidationError,
+    normalize_symbol,
+    parse_alpaca_order_id,
+    parse_date_string,
+    parse_enum,
+    parse_optional_float,
+    parse_positive_int,
+    parse_symbol_list,
+    validate_notes,
+)
 
 app = Flask(__name__)
 db.init_db()
@@ -168,6 +179,19 @@ def err(msg: str, code: int = 400):
     return jsonify({"error": msg}), code
 
 
+def get_json_body():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        raise ValidationError("Request body must be valid JSON")
+    return body
+
+
+def require_value(value, field_name: str):
+    if value in (None, ""):
+        raise ValidationError(f"{field_name} is required")
+    return value
+
+
 # ── Account ───────────────────────────────────────────────────────────────────
 
 @app.route("/api/account", methods=["GET"])
@@ -229,8 +253,11 @@ def get_orders():
 @app.route("/api/quote/<symbol>", methods=["GET"])
 def get_quote(symbol):
     try:
-        price = trading.get_latest_price(symbol.upper())
-        return jsonify({"symbol": symbol.upper(), "price": price})
+        symbol = normalize_symbol(symbol)
+        price = trading.get_latest_price(symbol)
+        return jsonify({"symbol": symbol, "price": price})
+    except ValidationError as e:
+        return err(str(e))
     except Exception as e:
         return err(str(e), 500)
 
@@ -241,9 +268,11 @@ def get_quote(symbol):
 def get_portfolio_chart():
     try:
         holdings = db.get_portfolio_for_chart()
-        days     = int(request.args.get("days", 20))
+        days     = parse_positive_int(request.args.get("days", 20), "days")
         data     = trading.get_portfolio_vs_spy(holdings, days=days)
         return jsonify(data)
+    except ValidationError as e:
+        return err(str(e))
     except Exception as e:
         return err(str(e), 500)
 
@@ -251,9 +280,12 @@ def get_portfolio_chart():
 @app.route("/api/chart/<symbol>", methods=["GET"])
 def get_symbol_chart(symbol):
     try:
-        days = int(request.args.get("days", 30))
-        data = trading.get_price_history(symbol.upper(), days=days)
+        symbol = normalize_symbol(symbol)
+        days = parse_positive_int(request.args.get("days", 30), "days")
+        data = trading.get_price_history(symbol, days=days)
         return jsonify(data)
+    except ValidationError as e:
+        return err(str(e))
     except Exception as e:
         traceback.print_exc()
         return err(str(e), 500)
@@ -263,17 +295,12 @@ def get_symbol_chart(symbol):
 
 @app.route("/api/buy", methods=["POST"])
 def buy():
-    body     = request.get_json(force=True)
-    symbol   = (body.get("symbol") or "").upper().strip()
-    quantity = body.get("quantity")
-
-    if not symbol:
-        return err("symbol is required")
     try:
-        quantity = int(quantity)
-        assert quantity > 0
-    except Exception:
-        return err("quantity must be a positive integer")
+        body     = get_json_body()
+        symbol   = normalize_symbol(body.get("symbol"))
+        quantity = parse_positive_int(body.get("quantity"), "quantity")
+    except ValidationError as e:
+        return err(str(e))
 
     # Must get a valid price before recording the order
     try:
@@ -349,17 +376,12 @@ def buy():
 
 @app.route("/api/sell", methods=["POST"])
 def sell():
-    body     = request.get_json(force=True)
-    symbol   = (body.get("symbol") or "").upper().strip()
-    quantity = body.get("quantity")
-
-    if not symbol:
-        return err("symbol is required")
     try:
-        quantity = int(quantity)
-        assert quantity > 0
-    except Exception:
-        return err("quantity must be a positive integer")
+        body     = get_json_body()
+        symbol   = normalize_symbol(body.get("symbol"))
+        quantity = parse_positive_int(body.get("quantity"), "quantity")
+    except ValidationError as e:
+        return err(str(e))
 
     pos = db.get_position(symbol)
     if not pos:
@@ -440,21 +462,17 @@ def sync_order():
     Check a pending local order against Alpaca and settle it if filled.
     Body: { "order_id": int, "alpaca_order_id": str, "trade_type": "buy"|"sell" }
     """
-    body            = request.get_json(force=True)
-    local_order_id  = body.get("order_id")
-    alpaca_order_id = body.get("alpaca_order_id")
-    trade_type      = body.get("trade_type")
-    symbol          = (body.get("symbol") or "").upper()
-    quantity        = int(body.get("quantity", 0))
+    try:
+        body            = get_json_body()
+        local_order_id  = parse_positive_int(body.get("order_id"), "order_id")
+        alpaca_order_id = parse_alpaca_order_id(body.get("alpaca_order_id"))
+        trade_type      = parse_enum(require_value(body.get("trade_type"), "trade_type"), {"buy", "sell"}, "trade_type")
+        symbol          = normalize_symbol(body.get("symbol"))
+        quantity        = parse_positive_int(body.get("quantity"), "quantity")
+    except ValidationError as e:
+        return err(str(e))
 
     print(f"[sync] order_id={local_order_id} alpaca_id={alpaca_order_id} type={trade_type} sym={symbol} qty={quantity}")
-
-    if not all([local_order_id, trade_type, symbol, quantity]):
-        return err("Missing required fields: order_id, trade_type, symbol, quantity")
-
-    # alpaca_order_id is required for polling — if missing we cannot sync
-    if not alpaca_order_id:
-        return err("Missing alpaca_order_id — cannot check order status")
 
     try:
         result = trading.wait_for_fill(alpaca_order_id, timeout=5)
@@ -537,22 +555,19 @@ def add_watchlist():
     Body: { symbol, target_price?, target_direction?, notes? }
     target_direction: "above" | "below"
     """
-    body             = request.get_json(force=True)
-    symbol           = (body.get("symbol") or "").upper().strip()
-    target_price     = body.get("target_price")
-    target_direction = body.get("target_direction")
-    notes            = body.get("notes", "")
+    try:
+        body             = get_json_body()
+        symbol           = normalize_symbol(body.get("symbol"))
+        target_price     = parse_optional_float(body.get("target_price"), "target_price")
+        target_direction = parse_enum(body.get("target_direction"), {"above", "below"}, "target_direction")
+        notes            = validate_notes(body.get("notes", ""))
+    except ValidationError as e:
+        return err(str(e))
 
-    if not symbol:
-        return err("symbol is required")
-    if len(symbol) > 5 or not symbol.replace(".", "").isalpha():
-        return err(f"Invalid symbol '{symbol}'")
-
-    # Validate target fields come together
     if (target_price is None) != (target_direction is None):
         return err("target_price and target_direction must both be set, or both omitted")
-    if target_direction and target_direction not in ("above", "below"):
-        return err("target_direction must be 'above' or 'below'")
+    if target_price is not None and target_price <= 0:
+        return err("target_price must be greater than 0")
 
     # Verify symbol exists on Alpaca
     try:
@@ -563,7 +578,7 @@ def add_watchlist():
     try:
         entry = db.add_to_watchlist(
             symbol           = symbol,
-            target_price     = float(target_price) if target_price else None,
+            target_price     = target_price,
             target_direction = target_direction,
             notes            = notes,
         )
@@ -577,10 +592,13 @@ def add_watchlist():
 @app.route("/api/watchlist/<symbol>", methods=["DELETE"])
 def remove_watchlist(symbol):
     try:
-        removed = db.remove_from_watchlist(symbol.upper())
+        symbol = normalize_symbol(symbol)
+        removed = db.remove_from_watchlist(symbol)
         if not removed:
-            return err(f"{symbol.upper()} not in watchlist", 404)
+            return err(f"{symbol} not in watchlist", 404)
         return jsonify({"success": True})
+    except ValidationError as e:
+        return err(str(e))
     except Exception as e:
         return err(str(e), 500)
 
@@ -588,23 +606,25 @@ def remove_watchlist(symbol):
 @app.route("/api/watchlist/<symbol>", methods=["PATCH"])
 def update_watchlist(symbol):
     """Update target price, direction, or notes."""
-    body             = request.get_json(force=True)
-    target_price     = body.get("target_price")
-    target_direction = body.get("target_direction")
-    notes            = body.get("notes")
-
-    if target_direction and target_direction not in ("above", "below", ""):
-        return err("target_direction must be 'above' or 'below'")
     try:
+        symbol           = normalize_symbol(symbol)
+        body             = get_json_body()
+        target_price     = parse_optional_float(body.get("target_price"), "target_price")
+        target_direction = parse_enum(body.get("target_direction"), {"above", "below"}, "target_direction")
+        notes            = validate_notes(body.get("notes"))
+        if target_price is not None and target_price <= 0:
+            return err("target_price must be greater than 0")
         entry = db.update_watchlist_entry(
-            symbol           = symbol.upper(),
-            target_price     = float(target_price) if target_price else None,
-            target_direction = target_direction or None,
+            symbol           = symbol,
+            target_price     = target_price,
+            target_direction = target_direction,
             notes            = notes,
         )
         if not entry:
-            return err(f"{symbol.upper()} not in watchlist", 404)
+            return err(f"{symbol} not in watchlist", 404)
         return jsonify({"success": True, "entry": entry})
+    except ValidationError as e:
+        return err(str(e))
     except Exception as e:
         traceback.print_exc()
         return err(str(e), 500)
@@ -623,8 +643,10 @@ def get_alerts():
 def dismiss_alert(symbol):
     """Mark an alert as seen without removing the watchlist entry."""
     try:
-        db.dismiss_watchlist_alert(symbol.upper())
+        db.dismiss_watchlist_alert(normalize_symbol(symbol))
         return jsonify({"success": True})
+    except ValidationError as e:
+        return err(str(e))
     except Exception as e:
         return err(str(e), 500)
 
@@ -635,7 +657,7 @@ def dismiss_alert(symbol):
 def get_symbols():
     """
     All unique symbols from portfolio + order history.
-    Used to build dynamic dropdowns in the frontend — never hardcoded.
+    Used to build dynamic dropdowns in the frontend.
     """
     try:
         return jsonify(db.get_symbols())
@@ -656,14 +678,17 @@ def filter_orders():
       price_max   — float
     """
     try:
-        symbols_raw = request.args.get("symbols", "")
-        symbols     = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-        trade_type  = request.args.get("trade_type") or None
-        status      = request.args.get("status")     or None
-        date_from   = request.args.get("date_from")  or None
-        date_to     = request.args.get("date_to")    or None
-        price_min   = float(request.args["price_min"]) if request.args.get("price_min") else None
-        price_max   = float(request.args["price_max"]) if request.args.get("price_max") else None
+        symbols     = parse_symbol_list(request.args.get("symbols", ""))
+        trade_type  = parse_enum(request.args.get("trade_type"), {"buy", "sell"}, "trade_type")
+        status      = parse_enum(request.args.get("status"), {"filled", "pending", "canceled"}, "status")
+        date_from   = parse_date_string(request.args.get("date_from"), "date_from")
+        date_to     = parse_date_string(request.args.get("date_to"), "date_to")
+        price_min   = parse_optional_float(request.args.get("price_min"), "price_min")
+        price_max   = parse_optional_float(request.args.get("price_max"), "price_max")
+        if date_from and date_to and date_from > date_to:
+            return err("date_from must be on or before date_to")
+        if price_min is not None and price_max is not None and price_min > price_max:
+            return err("price_min must be less than or equal to price_max")
 
         orders = db.filter_orders(
             symbols=symbols, trade_type=trade_type, status=status,
@@ -679,6 +704,8 @@ def filter_orders():
                 "price_min": price_min, "price_max": price_max,
             }
         })
+    except ValidationError as e:
+        return err(str(e))
     except Exception as e:
         traceback.print_exc()
         return err(str(e), 500)
@@ -695,12 +722,15 @@ def filter_portfolio():
       val_max   — market value maximum ($)
     """
     try:
-        symbols_raw = request.args.get("symbols", "")
-        symbols     = [s.strip() for s in symbols_raw.split(",") if s.strip()]
-        pl_min      = float(request.args["pl_min"])  if request.args.get("pl_min")  else None
-        pl_max      = float(request.args["pl_max"])  if request.args.get("pl_max")  else None
-        val_min     = float(request.args["val_min"]) if request.args.get("val_min") else None
-        val_max     = float(request.args["val_max"]) if request.args.get("val_max") else None
+        symbols     = parse_symbol_list(request.args.get("symbols", ""))
+        pl_min      = parse_optional_float(request.args.get("pl_min"), "pl_min")
+        pl_max      = parse_optional_float(request.args.get("pl_max"), "pl_max")
+        val_min     = parse_optional_float(request.args.get("val_min"), "val_min")
+        val_max     = parse_optional_float(request.args.get("val_max"), "val_max")
+        if pl_min is not None and pl_max is not None and pl_min > pl_max:
+            return err("pl_min must be less than or equal to pl_max")
+        if val_min is not None and val_max is not None and val_min > val_max:
+            return err("val_min must be less than or equal to val_max")
 
         # Fetch live prices for all held symbols to calculate P/L
         all_positions = db.get_portfolio()
@@ -720,6 +750,8 @@ def filter_portfolio():
                 "val_min": val_min, "val_max": val_max,
             }
         })
+    except ValidationError as e:
+        return err(str(e))
     except Exception as e:
         traceback.print_exc()
         return err(str(e), 500)

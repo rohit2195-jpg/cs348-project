@@ -7,7 +7,7 @@ consumed by both the terminal UI and a future React frontend.
 
 import os
 import dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -18,6 +18,7 @@ from alpaca.data.requests import (
 )
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
+from validation import normalize_symbol
 
 dotenv.load_dotenv()
 API_KEY = os.getenv("ALPACA_API_KEY")
@@ -44,9 +45,7 @@ def get_latest_price(symbol: str) -> float:
     Fetch latest price. Falls back to bid_price when ask_price is 0 (outside hours).
     Raises ValueError with a clear message for invalid symbols.
     """
-    sym = symbol.upper().strip()
-    if not sym or not sym.replace(".", "").isalpha() or len(sym) > 5:
-        raise ValueError(f"Invalid symbol '{sym}'. Use a standard US ticker like AAPL or TSLA.")
+    sym = normalize_symbol(symbol)
     try:
         req   = StockLatestQuoteRequest(symbol_or_symbols=sym, feed=DataFeed.IEX)
         quote = data_client.get_stock_latest_quote(req)
@@ -63,7 +62,7 @@ def get_latest_prices(symbols: list) -> dict:
     """Batch fetch prices for multiple symbols. Returns {symbol: price}."""
     if not symbols:
         return {}
-    syms   = [s.upper() for s in symbols]
+    syms   = [normalize_symbol(s) for s in symbols]
     req    = StockLatestQuoteRequest(symbol_or_symbols=syms, feed=DataFeed.IEX)
     quotes = data_client.get_stock_latest_quote(req)
     result = {}
@@ -114,12 +113,9 @@ def get_price_history(symbol: str, days: int = 30) -> list:
     Returns list of {"date": "YYYY-MM-DD", "close": float}
     — same shape expected by Recharts/Chart.js on the React side.
     """
-    sym = symbol.upper().strip()
-    if not sym or not sym.replace(".", "").isalpha() or len(sym) > 5:
-        raise ValueError(f"Invalid symbol '{sym}'. Use a standard US ticker like AAPL or TSLA.")
+    sym = normalize_symbol(symbol)
 
     # Alpaca requires timezone-aware datetimes
-    from datetime import timezone
     end   = datetime.now(timezone.utc)
     start = end - timedelta(days=days + 7)  # buffer for weekends/holidays
 
@@ -159,6 +155,47 @@ def get_price_history(symbol: str, days: int = 30) -> list:
             "close": round(float(bar.close), 2),
         })
     return result[-days:]
+
+
+def get_daily_bars_between(symbol: str, start: datetime, end: datetime) -> list[dict]:
+    """
+    Returns daily bars between two datetimes, inclusive of available bars.
+    Used for post-trade/post-signal evaluation.
+    """
+    sym = normalize_symbol(symbol)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+
+    def _fetch(feed=None):
+        kwargs = dict(symbol_or_symbols=sym, timeframe=TimeFrame.Day, start=start, end=end)
+        if feed:
+            kwargs["feed"] = feed
+        req  = StockBarsRequest(**kwargs)
+        bars = data_client.get_stock_bars(req)
+        try:
+            data = bars[sym]
+            return list(data) if data else []
+        except (KeyError, TypeError):
+            return []
+
+    raw = []
+    try:
+        raw = _fetch(DataFeed.IEX)
+    except Exception:
+        pass
+    if not raw:
+        raw = _fetch()
+
+    return [
+        {
+            "date":      bar.timestamp.strftime("%Y-%m-%d"),
+            "timestamp": bar.timestamp,
+            "close":     round(float(bar.close), 4),
+        }
+        for bar in raw
+    ]
 
 
 def get_spy_history(days: int = 30) -> list:

@@ -1,0 +1,32 @@
+{
+  "name": "cs348-qa-validator",
+  "version": "0.1.0",
+  "description": "Validates CS348 changes and reports remaining risk.",
+  "author": {
+    "name": "CS348 Project",
+    "email": "",
+    "url": ""
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "cs348",
+    "qa",
+    "validation",
+    "testing"
+  ],
+  "interface": {
+    "displayName": "CS348 QA Validator",
+    "shortDescription": "Runs the right validation and reports confidence and remaining risk",
+    "longDescription": "Use this role after code changes to choose the correct repo validation path, run it, summarize failures, and call out what still has not been exercised.",
+    "developerName": "CS348 Project",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": "Validate this CS348 change, run the most relevant checks, and summarize what still has not been proven.",
+    "brandColor": "#065F46",
+    "screenshots": []
+  }
+}

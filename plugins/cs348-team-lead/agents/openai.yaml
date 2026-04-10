@@ -1,0 +1,9 @@
+interface:
+  display_name: "CS348 Team Lead"
+  short_description: "Coordinate specialists for this trading simulator repo"
+  brand_color: "#1F2937"
+  default_prompt: "Use $cs348-team-lead to break this repo task into concrete frontend, backend, trading, review, and QA work."
+
+policy:
+  allow_implicit_invocation: false
+

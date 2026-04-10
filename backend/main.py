@@ -12,10 +12,12 @@ Master orchestrator. Run from the backend/ directory.
   python main.py --dry-run              print plan, zero LLM calls
 
 Pipeline:
-  Stage 1  Build ticker queue    held stocks (priority 1) + market movers (2/3)
-  Stage 2  Analyst Team          news collect + LLM analysis → analyst_reports
-  Stage 3  Researcher Team       bull/bear debate on actionable signals → research_verdicts
-  Stage 4  Trader Agent          execute best trades → trade_decisions + Alpaca orders
+  Stage 1  Build ticker queue    held stocks + watchlist + fallback market candidates
+  Stage 2  Analyst Team          news + macro collection → raw_news / analyst_reports
+  Stage 3  Feature Store         normalize events + build replayable feature snapshots
+  Stage 4  Researcher Team       LLM debate on a capped shortlist only
+  Stage 5  Evaluation            score prior verdicts and filled trades vs SPY
+  Stage 6  Trader Agent          execute reviewed trade-ready names
 ══════════════════════════════════════════════════════════════════════════════
 """
 
@@ -41,6 +43,8 @@ from Researcher_Team.researcher_team import run_researcher_batch, is_worth_resea
 
 # Trader Team
 from Trader_Team.trader_agent import run_trader, get_eligible_verdicts
+from evaluator import run_evaluation_cycle
+from feature_store import build_feature_store_for_tickers, shortlist_candidates
 
 
 # ── Macro ticker extraction ────────────────────────────────────────────────────
@@ -161,23 +165,11 @@ def _collect_one(item: TickerItem) -> dict:
 
 def _analyse_one(ticker: str) -> dict:
     """
-    Runs the LLM news analyst for one ticker. Runs in a thread pool.
-    Returns result dict with signal, confidence, or error.
+    Analyst stage is now pure data collection — no LLM call.
+    run_news_analyst() just confirms articles are in DB and returns.
     """
     try:
-        t0      = time.time()
-        report  = run_news_analyst(ticker)
-        elapsed = time.time() - t0
-
-        if "error" in report:
-            _tprint(f"  [analyst] {ticker:<8} {_c('✗', C_RED)} {report['error']}")
-            return {"ticker": ticker, "report": None, "error": report["error"]}
-
-        sig    = report["signal"]
-        colour = SIGNAL_COLOUR.get(sig, "")
-        conf   = report["confidence"]
-        bar    = "█" * int(conf * 15)
-        _tprint(f"  [analyst] {ticker:<8} {_c('✓', C_GREEN)} {_c(sig, colour)}  {conf:.0%}  {bar}  ({elapsed:.1f}s)")
+        report = run_news_analyst(ticker)
         return {"ticker": ticker, "report": report, "error": None}
     except Exception as e:
         _tprint(f"  [analyst] {ticker:<8} ERROR: {e}")
@@ -240,9 +232,8 @@ def stage_analyst(queue: list[TickerItem], dry_run: bool = False) -> list[str]:
     print(f"  Collection complete in {time.time()-t0:.1f}s  "
           f"(was ~{len(tickers)*60:.0f}s sequential)")
 
-    # 2d — PARALLEL LLM analysis (all tickers at once, up to ANALYST_WORKERS)
-    # DeepSeek has no strict rate limit — 5 concurrent calls is fine.
-    _section(f"Running news analyst  ({ANALYST_WORKERS} at a time)")
+    # 2d — Mark tickers as collected (no LLM call — researcher reads raw articles)
+    _section("Confirming collection  (no LLM calls in analyst stage)")
     t0 = time.time()
     analyse_results: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=ANALYST_WORKERS, thread_name_prefix="analyst") as pool:
@@ -250,8 +241,7 @@ def stage_analyst(queue: list[TickerItem], dry_run: bool = False) -> list[str]:
         for future in as_completed(futures):
             result = future.result()
             analyse_results[result["ticker"]] = result
-    print(f"  Analysis complete in {time.time()-t0:.1f}s  "
-          f"(was ~{len(tickers)*36:.0f}s sequential)")
+    print(f"  Collection confirmed in {time.time()-t0:.1f}s")
 
     processed = [t for t in tickers if not analyse_results.get(t, {}).get("error")]
     failed    = [t for t in tickers if analyse_results.get(t, {}).get("error")]
@@ -261,14 +251,32 @@ def stage_analyst(queue: list[TickerItem], dry_run: bool = False) -> list[str]:
     return processed
 
 
-# ── Stage 3: Researcher team ──────────────────────────────────────────────────
+# ── Stage 3: Feature store + Researcher team ──────────────────────────────────
 
 def stage_researcher(tickers: list[str], dry_run: bool = False) -> list[dict]:
-    _header(f"STAGE 3 — Researcher Team")
+    run_date = datetime.utcnow().strftime("%Y-%m-%d")
+    _header("STAGE 3 — Feature Store")
+
+    feature_snapshots = build_feature_store_for_tickers(tickers, run_date=run_date)
+    shortlist_result = shortlist_candidates(feature_snapshots, run_date=run_date)
+    shortlisted = shortlist_result["shortlist"]
+    filtered = [row for row in shortlist_result["candidate_rows"] if row["triage_status"] != "shortlisted"]
+
+    print(f"\n  Built feature snapshots: {len(feature_snapshots)}")
+    print(f"  LLM shortlist:           {len(shortlisted)}")
+    print(f"  Filtered before LLM:     {len(filtered)}")
+    for row in filtered[:12]:
+        print(f"    {row['ticker']}: {row.get('skip_reason') or 'filtered'}")
+
+    if not shortlisted:
+        print("\n  No names survived deterministic triage — researcher stage skipped.")
+        return []
+
+    _header("STAGE 4 — Researcher Team")
 
     eligible   = []
     ineligible = []
-    for t in tickers:
+    for t in [row["ticker"] for row in shortlisted]:
         ok, reason = is_worth_researching(t)
         (eligible if ok else ineligible).append((t, reason))
 
@@ -285,51 +293,44 @@ def stage_researcher(tickers: list[str], dry_run: bool = False) -> list[dict]:
         print(f"\n  DRY RUN — would debate: {', '.join(t for t, _ in eligible)}")
         return []
 
-    _section(f"Debating {len(eligible)} ticker(s)...")
-    results = run_researcher_batch([t for t, _ in eligible])
+    _section(f"Debating {len(eligible)} shortlisted ticker(s)...")
+    results = run_researcher_batch([t for t, _ in eligible], run_date=run_date)
     return results
 
 
-# ── Stage 4: Summary ──────────────────────────────────────────────────────────
+# ── Stage 5: Evaluation ───────────────────────────────────────────────────────
 
-def stage_summary(analyst_tickers: list[str]) -> None:
-    _header("STAGE 4 — Summary")
+def stage_evaluation(dry_run: bool = False) -> dict:
+    _header("STAGE 5 — Evaluation")
+    if dry_run:
+        print("  DRY RUN — would evaluate prior verdicts and filled trades")
+        return {"new_verdict_evaluations": 0, "new_trade_evaluations": 0, "summary": {}}
 
-    # Analyst signals
-    _section("Analyst signals")
-    print(f"  {'Ticker':<8}  {'Signal':<6}  {'Conf':>5}  Analyst")
-    print(f"  {'─'*48}")
-    for ticker in analyst_tickers:
-        for r in get_latest_reports(ticker, limit=10):
-            sig    = r["signal"]
-            colour = SIGNAL_COLOUR.get(sig, "")
+    result = run_evaluation_cycle()
+    print(
+        f"  Added {result['new_verdict_evaluations']} verdict evaluation(s) and "
+        f"{result['new_trade_evaluations']} trade evaluation(s)"
+    )
+    summary = result.get("summary") or {}
+    if summary:
+        print(f"  {'Bucket':<18} {'Count':>5} {'Win%':>6} {'Thesis%':>9} {'Excess%':>9}")
+        print(f"  {'─'*54}")
+        for bucket, row in sorted(summary.items()):
             print(
-                f"  {r['ticker']:<8}  "
-                f"{_c(sig, colour):<6}  "
-                f"{r['confidence']:>4.0%}  "
-                f"{r['analyst_type']}"
+                f"  {bucket:<18} {row.get('count', 0):>5} "
+                f"{row.get('win_rate', 0.0):>6.0%} "
+                f"{row.get('avg_thesis_return_pct', 0.0):>8.2f}% "
+                f"{row.get('avg_excess_return_pct', 0.0):>8.2f}%"
             )
-
-    # Research verdicts
-    _section("Actionable research verdicts  (conviction ≥ 60%)")
-    verdicts = get_actionable_verdicts(min_conviction=0.6)
-    if not verdicts:
-        print("  None — all tickers below conviction threshold or HOLD.")
     else:
-        print(f"  {'Ticker':<8}  {'Verdict':<12}  {'Conv':>5}  Reasoning")
-        print(f"  {'─'*60}")
-        for v in verdicts:
-            col = VERDICT_COLOUR.get(v["verdict"], "")
-            reasoning_preview = v["final_reasoning"][:55].replace("\n", " ")
-            print(
-                f"  {v['ticker']:<8}  "
-                f"{_c(v['verdict'], col):<12}  "
-                f"{v['conviction']:>4.0%}  "
-                f"{reasoning_preview}..."
-            )
+        print("  No mature evaluations available yet.")
+    return result
+
+
+# ── Stage 6: Summary ──────────────────────────────────────────────────────────
 
 def stage_summary(analyst_tickers: list[str]) -> None:
-    _header("STAGE 4 — Summary")
+    _header("STAGE 6 — Summary")
 
     _section("Analyst signals")
     print(f"  {'Ticker':<8}  {'Signal':<6}  {'Conf':>5}  Analyst")
@@ -340,8 +341,8 @@ def stage_summary(analyst_tickers: list[str]) -> None:
             colour = SIGNAL_COLOUR.get(sig, "")
             print(f"  {r['ticker']:<8}  {_c(sig, colour):<6}  {r['confidence']:>4.0%}  {r['analyst_type']}")
 
-    _section("Research verdicts  (conviction ≥ 60%)")
-    verdicts = get_actionable_verdicts(min_conviction=0.6)
+    _section("Research verdicts  (conviction ≥ 68%)")
+    verdicts = get_actionable_verdicts(min_conviction=0.68, hours=30)
     if not verdicts:
         print("  None this run.")
     else:
@@ -357,10 +358,10 @@ def stage_summary(analyst_tickers: list[str]) -> None:
             )
 
 
-# ── Stage 4: Trader ───────────────────────────────────────────────────────────
+# ── Stage 7: Trader ───────────────────────────────────────────────────────────
 
 def stage_trader(dry_run: bool = False) -> dict:
-    _header("STAGE 4 — Trader Agent")
+    _header("STAGE 7 — Trader Agent")
     print(f"{C_CYAN}Checking for eligible verdicts...{C_RESET}")
 
     eligible = get_eligible_verdicts()
@@ -396,17 +397,20 @@ def stage_trader(dry_run: bool = False) -> dict:
 
     decisions = result.get("decisions", [])
     if decisions:
-        print(f"\n  {'Action':<6}  {'Ticker':<8}  {'Qty':>5}  {'Price':>8}  {'Status':<12}  Rationale")
+        print(f"\n  {'Action':<6}  {'Ticker':<8}  {'Qty':>5}  {'Price':>8}  {'Status':<12}  Note")
         print(f"  {'─'*72}")
         for d in decisions:
+            if d["action"] == "SKIP":
+                continue
             action_col = C_GREEN if d["action"] == "BUY" else (C_RED if d["action"] == "SELL" else C_YELLOW)
+            total = d.get("price", 0) * d.get("quantity", 0)
             print(
                 f"  {_c(d['action'], action_col):<6}  "
                 f"{d['ticker']:<8}  "
                 f"{d['quantity']:>5}  "
                 f"${d['price']:>7.2f}  "
                 f"{d['status']:<12}  "
-                f"{d['rationale'][:45]}..."
+                f"total=${total:,.0f}"
             )
 
     return result
@@ -418,9 +422,13 @@ def parse_args():
     p = argparse.ArgumentParser(description="Trading bot — master orchestrator")
     p.add_argument(
         "--stage",
-        choices=["all", "analyst", "researcher", "trader"],
+        choices=["all", "analyst", "researcher", "evaluate", "trader", "from-researcher"],
         default="all",
-        help="Which stage(s) to run  (default: all)",
+        help=(
+            "Which stage(s) to run (default: all). "
+            "Use 'from-researcher' to skip analyst and run researcher+trader "
+            "using existing DB data from a previous analyst run."
+        ),
     )
     p.add_argument(
         "--tickers", nargs="+", metavar="TICKER",
@@ -466,7 +474,7 @@ def main():
         analyst_tickers = stage_analyst(queue, dry_run=args.dry_run)
 
     # ── Researcher stage ───────────────────────────────────────────────────────
-    if args.stage in ("all", "researcher"):
+    if args.stage in ("all", "researcher", "from-researcher"):
         if not analyst_tickers:
             analyst_tickers = [t.ticker for t in get_held_tickers()]
 
@@ -482,12 +490,16 @@ def main():
 
         stage_researcher(all_for_research, dry_run=args.dry_run)
 
+    # ── Evaluation stage ───────────────────────────────────────────────────────
+    if args.stage in ("all", "evaluate", "trader", "from-researcher"):
+        stage_evaluation(dry_run=args.dry_run)
+
     # ── Summary (printed before trader so you can see what triggers it) ────────
-    if not args.dry_run and analyst_tickers and args.stage != "trader":
+    if not args.dry_run and analyst_tickers and args.stage not in ("trader", "from-researcher"):
         stage_summary(analyst_tickers)
 
     # ── Trader stage ───────────────────────────────────────────────────────────
-    if args.stage in ("all", "trader"):
+    if args.stage in ("all", "trader", "from-researcher"):
         stage_trader(dry_run=args.dry_run)
 
     elapsed = (datetime.now() - start).total_seconds()

@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "validate": "bash scripts/validate.sh",
+    "validate:frontend": "npm --prefix frontend run lint && npm --prefix frontend run build",
+    "validate:backend": "bash scripts/validate.sh --backend-only"
+  },
   "dependencies": {
     "recharts": "^3.7.0"
   }

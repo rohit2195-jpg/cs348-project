@@ -1,0 +1,32 @@
+{
+  "name": "cs348-bug-fixer",
+  "version": "0.1.0",
+  "description": "Reproduces and fixes bugs in the CS348 trading simulator.",
+  "author": {
+    "name": "CS348 Project",
+    "email": "",
+    "url": ""
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "cs348",
+    "bug-fix",
+    "debugging",
+    "triage"
+  ],
+  "interface": {
+    "displayName": "CS348 Bug Fixer",
+    "shortDescription": "Reproduces issues, isolates causes, and lands the smallest solid fix",
+    "longDescription": "Use this role when behavior is broken but the root cause is unclear. It focuses on reproduction, narrowing the failure path, and applying the most defensible fix with verification.",
+    "developerName": "CS348 Project",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": "Debug this issue in the CS348 repo, isolate the root cause, and apply the smallest fix that actually resolves it.",
+    "brandColor": "#B45309",
+    "screenshots": []
+  }
+}

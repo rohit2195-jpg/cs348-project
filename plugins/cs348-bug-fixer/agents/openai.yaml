@@ -1,0 +1,9 @@
+interface:
+  display_name: "CS348 Bug Fixer"
+  short_description: "Reproduce, isolate, and fix broken behavior fast"
+  brand_color: "#B45309"
+  default_prompt: "Use $cs348-bug-fixer to reproduce a bug, identify root cause, and land a focused fix in this repo."
+
+policy:
+  allow_implicit_invocation: false
+

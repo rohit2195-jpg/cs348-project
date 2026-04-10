@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "docs-mcp": {
+      "url": "https://goo.gle/gemini-cli-docs-mcp",
+      "type": "sse"
+    }
+  }
+}
