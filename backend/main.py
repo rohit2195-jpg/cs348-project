@@ -26,7 +26,7 @@ import logging
 import sys
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, UTC
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from database import Base, engine, get_latest_reports, get_actionable_verdicts
@@ -254,7 +254,7 @@ def stage_analyst(queue: list[TickerItem], dry_run: bool = False) -> list[str]:
 # ── Stage 3: Feature store + Researcher team ──────────────────────────────────
 
 def stage_researcher(tickers: list[str], dry_run: bool = False) -> list[dict]:
-    run_date = datetime.utcnow().strftime("%Y-%m-%d")
+    run_date = datetime.now(UTC).strftime("%Y-%m-%d")
     _header("STAGE 3 — Feature Store")
 
     feature_snapshots = build_feature_store_for_tickers(tickers, run_date=run_date)
@@ -341,8 +341,8 @@ def stage_summary(analyst_tickers: list[str]) -> None:
             colour = SIGNAL_COLOUR.get(sig, "")
             print(f"  {r['ticker']:<8}  {_c(sig, colour):<6}  {r['confidence']:>4.0%}  {r['analyst_type']}")
 
-    _section("Research verdicts  (conviction ≥ 68%)")
-    verdicts = get_actionable_verdicts(min_conviction=0.68, hours=30)
+    _section("Research verdicts  (conviction ≥ 62%)")
+    verdicts = get_actionable_verdicts(min_conviction=0.62, hours=30)
     if not verdicts:
         print("  None this run.")
     else:

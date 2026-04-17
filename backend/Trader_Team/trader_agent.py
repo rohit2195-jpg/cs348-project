@@ -50,7 +50,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Minimum conviction to act on a verdict
-MIN_CONVICTION = 0.68
+MIN_CONVICTION = 0.62
 MACRO_ONLY_MIN_CONFIDENCE = 0.75
 
 # Keep this much cash as reserve (never invest 100%)
@@ -58,9 +58,8 @@ CASH_RESERVE_PCT = 0.10
 
 # Execution/risk controls
 MAX_NEW_BUYS_PER_RUN = 3
-MAX_TOTAL_BUY_IDEAS = 4
-MAX_POSITION_PCT = 0.25
-PREMARKET_BUY_MIN_CONVICTION = 0.78
+MAX_TOTAL_BUY_IDEAS = 6
+MAX_POSITION_PCT = 0.40
 
 
 # ── Eligibility ───────────────────────────────────────────────────────────────
@@ -148,7 +147,7 @@ def get_eligible_verdicts() -> list[dict]:
 # ── Core execution ────────────────────────────────────────────────────────────
 
 def _execute_buy(ticker: str, conviction: float, dollar_allocation: float,
-                 verdict_id, rationale: str) -> dict:
+                 verdict_id, rationale: str, allow_cap_override: bool = False) -> dict:
     """Buy as many whole shares as the allocation allows. Returns result dict."""
     try:
         price    = t.get_latest_price(ticker)
@@ -158,6 +157,8 @@ def _execute_buy(ticker: str, conviction: float, dollar_allocation: float,
         existing = get_position(ticker)
         existing_value = (existing["quantity"] * price) if existing else 0.0
         position_cap = max(0.0, portfolio_value * MAX_POSITION_PCT - existing_value)
+        if allow_cap_override:
+            position_cap = max(position_cap, cash)
         capped_allocation = min(dollar_allocation, cash, position_cap)
         shares   = int(capped_allocation // price)
 
@@ -219,6 +220,70 @@ def _execute_buy(ticker: str, conviction: float, dollar_allocation: float,
         return {"ticker": ticker, "action": "ERROR", "reason": str(e)}
 
 
+def _queue_buy(ticker: str, conviction: float, dollar_allocation: float,
+               verdict_id, rationale: str, available_cash: float,
+               allow_cap_override: bool = False) -> dict:
+    """Queue a next-open buy without submitting an order."""
+    try:
+        existing_queue = next(
+            (
+                d for d in get_recent_trade_decisions(minutes=24 * 60)
+                if d["ticker"] == ticker and d["action"] == "BUY" and d["status"] == "queued"
+            ),
+            None,
+        )
+        if existing_queue:
+            logger.info("[trader] Existing queued BUY for %s found — skipping duplicate queue", ticker)
+            return {
+                "ticker": ticker,
+                "action": "BUY",
+                "shares": existing_queue["quantity"],
+                "price": existing_queue["price"],
+                "total": round(existing_queue["quantity"] * existing_queue["price"], 2),
+                "status": "queued",
+            }
+
+        price = t.get_latest_price(ticker)
+        account = t.get_account()
+        portfolio_value = float(account.portfolio_value)
+        existing = get_position(ticker)
+        existing_value = (existing["quantity"] * price) if existing else 0.0
+        position_cap = max(0.0, portfolio_value * MAX_POSITION_PCT - existing_value)
+        if allow_cap_override:
+            position_cap = max(position_cap, available_cash)
+        capped_allocation = min(dollar_allocation, available_cash, position_cap)
+        shares = int(capped_allocation // price)
+        if shares < 1:
+            insert_trade_decision(
+                ticker=ticker, action="SKIP", quantity=0, price=price,
+                conviction=conviction,
+                rationale=(
+                    f"Queued allocation ${capped_allocation:.0f} too small for 1 share at ${price:.2f}. "
+                    f"Position cap is {MAX_POSITION_PCT:.0%} of portfolio."
+                ),
+                verdict_id=verdict_id, alpaca_id=None, status="skipped"
+            )
+            return {"ticker": ticker, "action": "SKIP", "reason": "allocation < 1 share or position capped"}
+
+        insert_trade_decision(
+            ticker=ticker, action="BUY", quantity=shares, price=price,
+            conviction=conviction, rationale=rationale,
+            verdict_id=verdict_id, alpaca_id=None, status="queued"
+        )
+        logger.info("[trader] QUEUED BUY %s×%s @ ~$%.2f for next open", shares, ticker, price)
+        return {
+            "ticker": ticker,
+            "action": "BUY",
+            "shares": shares,
+            "price": price,
+            "total": round(price * shares, 2),
+            "status": "queued",
+        }
+    except Exception as e:
+        logger.error(f"[trader] QUEUE BUY ERROR {ticker}: {e}")
+        return {"ticker": ticker, "action": "ERROR", "reason": str(e)}
+
+
 def _execute_sell(ticker: str, conviction: float, verdict_id, rationale: str) -> dict:
     """Sell 100% of held position."""
     position = get_position(ticker)
@@ -266,6 +331,54 @@ def _execute_sell(ticker: str, conviction: float, verdict_id, rationale: str) ->
     except Exception as e:
         logger.error(f"[trader] SELL ERROR {ticker}: {e}")
         return {"ticker": ticker, "action": "ERROR", "reason": str(e)}
+
+
+def _queue_sell(ticker: str, conviction: float, verdict_id, rationale: str) -> dict:
+    position = get_position(ticker)
+    if not position:
+        logger.info(f"[trader] SKIP QUEUE SELL {ticker}: not held")
+        insert_trade_decision(
+            ticker=ticker, action="SKIP", quantity=0, price=0,
+            conviction=conviction, rationale="Queued SELL signal but not held — cannot queue sell",
+            verdict_id=verdict_id, alpaca_id=None, status="skipped"
+        )
+        return {"ticker": ticker, "action": "SKIP", "reason": "not held"}
+
+    existing_queue = next(
+        (
+            d for d in get_recent_trade_decisions(minutes=24 * 60)
+            if d["ticker"] == ticker and d["action"] == "SELL" and d["status"] == "queued"
+        ),
+        None,
+    )
+    if existing_queue:
+        logger.info("[trader] Existing queued SELL for %s found — skipping duplicate queue", ticker)
+        return {
+            "ticker": ticker,
+            "action": "SELL",
+            "shares": existing_queue["quantity"],
+            "price": existing_queue["price"],
+            "status": "queued",
+        }
+
+    try:
+        price = t.get_latest_price(ticker)
+    except Exception:
+        price = position["purchasePrice"]
+
+    insert_trade_decision(
+        ticker=ticker, action="SELL", quantity=position["quantity"], price=price,
+        conviction=conviction, rationale=rationale,
+        verdict_id=verdict_id, alpaca_id=None, status="queued"
+    )
+    logger.info("[trader] QUEUED SELL %s×%s @ ~$%.2f for next open", position["quantity"], ticker, price)
+    return {
+        "ticker": ticker,
+        "action": "SELL",
+        "shares": position["quantity"],
+        "price": price,
+        "status": "queued",
+    }
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -417,33 +530,31 @@ def run_trader() -> dict:
     # ── Sell pass first (frees up cash before buying) ─────────────────────────
     sells = [v for v in eligible if "SELL" in v.get("_direction", v.get("verdict", ""))]
     buys  = [v for v in eligible if "BUY"  in v.get("_direction", v.get("verdict", ""))]
+    market_open = t.is_market_open()
 
     results = []
     for v in sells:
         rationale = f"SELL signal: {v['verdict']} ({v['conviction']:.0%} conviction). {v.get('final_reasoning','')[:100]}"
-        result    = _execute_sell(v["ticker"], v["conviction"], v.get("id"), rationale)
+        if market_open:
+            result = _execute_sell(v["ticker"], v["conviction"], v.get("id"), rationale)
+        else:
+            result = _queue_sell(v["ticker"], v["conviction"], v.get("id"), rationale)
         results.append(result)
 
     # ── Rebalance pass — sell non-buy positions if cash is too low ───────────
     buy_ticker_set = {v["ticker"] for v in buys}
-    rebalance_results = _rebalance_if_needed(buy_ticker_set)
-    results.extend(rebalance_results)
+    if market_open:
+        rebalance_results = _rebalance_if_needed(buy_ticker_set)
+        results.extend(rebalance_results)
 
     # ── Buy pass — split available cash across all BUY tickers ───────────────
     buys = _select_buy_candidates(buys)
-    market_open = t.is_market_open()
-    if not market_open:
-        buys = [v for v in buys if v["conviction"] >= PREMARKET_BUY_MIN_CONVICTION]
-        logger.info(
-            "[trader] market closed — restricting buys to conviction >= %.0f%% (%s idea(s) remain)",
-            PREMARKET_BUY_MIN_CONVICTION * 100,
-            len(buys),
-        )
 
     if buys:
         account      = t.get_account()
         cash         = float(account.cash)
         investable   = cash * (1 - CASH_RESERVE_PCT)
+        planning_cash = investable
 
         # Weight each ticker by conviction so higher-conviction gets more capital
         total_conviction = sum(v["conviction"] for v in buys)
@@ -456,6 +567,7 @@ def run_trader() -> dict:
             f"[trader] Cash: ${cash:,.0f}  Investable: ${investable:,.0f}  "
             f"Split across {len(buys)} BUY ticker(s)"
         )
+        queued_or_filled = 0
         for v in buys:
             alloc     = allocations[v["ticker"]]
             rationale = (
@@ -464,19 +576,47 @@ def run_trader() -> dict:
                 f"({v['conviction']/total_conviction:.0%} weight). "
                 f"{v.get('final_reasoning','')[:80]}"
             )
-            result = _execute_buy(v["ticker"], v["conviction"], alloc, v.get("id"), rationale)
+            if market_open:
+                result = _execute_buy(v["ticker"], v["conviction"], alloc, v.get("id"), rationale)
+            else:
+                result = _queue_buy(v["ticker"], v["conviction"], alloc, v.get("id"), rationale, planning_cash)
             results.append(result)
+            if result.get("status") in {"filled", "queued"}:
+                queued_or_filled += 1
+                if not market_open:
+                    planning_cash = max(0.0, planning_cash - float(result.get("total", 0.0)))
+
+        if queued_or_filled == 0:
+            logger.info("[trader] Weighted sizing produced no executable buy — retrying with a single best affordable idea")
+            for v in buys:
+                rationale = (
+                    f"Fallback buy: prioritizing at least one actionable rotation from the strongest idea "
+                    f"{v['ticker']} ({v['conviction']:.0%}). {v.get('final_reasoning','')[:80]}"
+                )
+                if market_open:
+                    result = _execute_buy(
+                        v["ticker"], v["conviction"], investable, v.get("id"), rationale, allow_cap_override=True
+                    )
+                else:
+                    result = _queue_buy(
+                        v["ticker"], v["conviction"], investable, v.get("id"), rationale, planning_cash, allow_cap_override=True
+                    )
+                results.append(result)
+                if result.get("status") in {"filled", "queued"}:
+                    break
 
     decisions   = get_recent_trade_decisions(minutes=10)
     executed    = [r for r in results if r.get("action") in ("BUY", "SELL") and r.get("status") == "filled"]
+    queued      = [r for r in results if r.get("action") in ("BUY", "SELL") and r.get("status") == "queued"]
     skipped     = [r for r in results if r.get("action") == "SKIP"]
     errors      = [r for r in results if r.get("action") == "ERROR"]
 
-    msg = f"{len(executed)} trade(s) filled, {len(skipped)} skipped, {len(errors)} errors."
+    msg = f"{len(executed)} trade(s) filled, {len(queued)} queued, {len(skipped)} skipped, {len(errors)} errors."
     logger.info(f"[trader] {msg}")
 
     return {
         "trades_executed": len(executed),
+        "trades_queued":   len(queued),
         "skipped":         len(skipped),
         "error":           None,
         "message":         msg,

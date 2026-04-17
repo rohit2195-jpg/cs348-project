@@ -87,6 +87,45 @@ def _stdev(values: list[float]) -> float:
     return sqrt(variance)
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _freshness_score(events: list[dict]) -> float:
+    if not events:
+        return 0.0
+
+    now = datetime.now(timezone.utc)
+    newest_age_hours = None
+    for event in events:
+        collected_at = _parse_iso_datetime(event.get("collected_at"))
+        if not collected_at:
+            continue
+        age_hours = max(0.0, (now - collected_at).total_seconds() / 3600)
+        if newest_age_hours is None or age_hours < newest_age_hours:
+            newest_age_hours = age_hours
+
+    if newest_age_hours is None:
+        return 0.0
+    if newest_age_hours <= 6:
+        return 2.0
+    if newest_age_hours <= 18:
+        return 1.5
+    if newest_age_hours <= 36:
+        return 1.0
+    if newest_age_hours <= 72:
+        return 0.5
+    return 0.0
+
+
 def _build_history_context(ticker: str) -> dict:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=90)
@@ -147,6 +186,7 @@ def build_feature_snapshot(ticker: str, run_date: str | None = None, candidate_s
     avg_volume = snapshot.get("avg_volume") or 0.0
     avg_volume_ratio = round((snapshot.get("volume") or 0.0) / avg_volume, 3) if avg_volume else None
     history_context = _build_history_context(ticker)
+    freshness_score = _freshness_score(events)
 
     evidence_score = 0.0
     if len(events) >= 3:
@@ -167,6 +207,7 @@ def build_feature_snapshot(ticker: str, run_date: str | None = None, candidate_s
         evidence_score += 1.0
     if macro and macro.get("confidence", 0.0) >= 0.70:
         evidence_score += 1.5
+    evidence_score += freshness_score
 
     signal_quality = "weak"
     if evidence_score >= 6:
@@ -189,7 +230,7 @@ def build_feature_snapshot(ticker: str, run_date: str | None = None, candidate_s
     triage_score = evidence_score
     triage_score += min(3.0, len(events) * 0.6)
     triage_score += min(2.0, len(unique_sources) * 0.5)
-    triage_score += 1.2 if is_held else 0.0
+    triage_score += 0.4 if is_held else 0.0
     triage_score += 0.8 if macro and macro.get("confidence", 0.0) >= 0.7 else 0.0
     triage_score += 1.0 if any(tag in {"earnings", "deal", "regulatory"} for tag in dominant_tags) else 0.0
     triage_score -= 1.5 * len(block_reasons)
@@ -202,6 +243,7 @@ def build_feature_snapshot(ticker: str, run_date: str | None = None, candidate_s
         } if macro else None,
         "supporting_events": events[:8],
         "event_tag_counts": dict(tag_counter),
+        "freshness_score": round(freshness_score, 3),
     }
 
     snapshot_id = upsert_feature_snapshot(

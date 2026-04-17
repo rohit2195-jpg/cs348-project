@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 BODY_PREVIEW_CHARS      = 600
 MAX_ARTICLES_PER_SOURCE = 15
+FAST_EXIT_PRIMARY_ARTICLE_COUNT = 8
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -384,11 +385,17 @@ def collect_news_for_ticker(ticker: str) -> dict:
     try:
         with BrowserManager(headless=True) as bm:
             fv_articles = fetch_finviz_pw(ticker, bm)
-            time.sleep(0.8)
-            mw_articles = fetch_marketwatch_pw(ticker, bm)
-            time.sleep(0.8)
+            primary_article_count = len(yf_articles) + len(fv_articles)
+            if primary_article_count >= FAST_EXIT_PRIMARY_ARTICLE_COUNT:
+                logger.info(
+                    "[collector]   %s: primary sources already produced %s articles — skipping MarketWatch only",
+                    ticker,
+                    primary_article_count,
+                )
+            else:
+                mw_articles = fetch_marketwatch_pw(ticker, bm)
+
             rt_articles = fetch_reuters_pw(ticker, bm)
-            time.sleep(0.8)
             bz_articles = fetch_benzinga_pw(ticker, bm)
     except Exception as e:
         logger.error(f"[collector] Browser session failed for {ticker}: {e}")

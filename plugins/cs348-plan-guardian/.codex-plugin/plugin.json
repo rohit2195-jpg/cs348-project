@@ -1,0 +1,36 @@
+{
+  "name": "cs348-plan-guardian",
+  "version": "0.1.0",
+  "description": "Reviews implementation against the intended plan, finds defects, and applies focused fixes.",
+  "author": {
+    "name": "CS348 Project",
+    "email": "",
+    "url": ""
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "cs348",
+    "plan-review",
+    "debugging",
+    "execution"
+  ],
+  "interface": {
+    "displayName": "CS348 Plan Guardian",
+    "shortDescription": "Checks work against the intended plan, finds bugs, and fixes drift",
+    "longDescription": "Use this role when execution has drifted from the original plan or when a change needs both review and remediation. It compares implementation to stated goals, identifies regressions and missing pieces, and lands the smallest defensible fix to restore alignment.",
+    "developerName": "CS348 Project",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Compare this work to the original plan, identify drift and defects, and fix only what is needed to restore alignment.",
+      "Review this implementation for plan mismatches, hidden regressions, and missing validation, then repair the root cause.",
+      "Act as a reviewer-fixer that preserves scope, restores intended behavior, and reports residual risk."
+    ],
+    "brandColor": "#0F766E",
+    "screenshots": []
+  }
+}

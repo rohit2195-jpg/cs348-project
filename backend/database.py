@@ -1235,6 +1235,29 @@ def get_latest_verdict(ticker: str) -> dict | None:
         session.close()
 
 
+def get_latest_verdict_since(
+    ticker: str,
+    created_at_or_after: datetime,
+    previous_id: int | None = None,
+) -> dict | None:
+    session = SessionLocal()
+    try:
+        q = (
+            session.query(ResearchVerdictRow)
+            .filter(
+                ResearchVerdictRow.ticker == ticker.upper(),
+                ResearchVerdictRow.created_at >= created_at_or_after,
+            )
+            .order_by(ResearchVerdictRow.created_at.desc(), ResearchVerdictRow.id.desc())
+        )
+        if previous_id is not None:
+            q = q.filter(ResearchVerdictRow.id != previous_id)
+        row = q.first()
+        return _verdict_to_dict(row) if row else None
+    finally:
+        session.close()
+
+
 def get_actionable_verdicts(min_conviction: float = 0.6, hours: int = 48) -> list[dict]:
     """
     Returns BUY/STRONG_BUY/SELL/STRONG_SELL verdicts with conviction >= threshold.

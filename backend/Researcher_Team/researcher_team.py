@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.tools import tool
@@ -19,6 +21,7 @@ from langchain_deepseek import ChatDeepSeek
 from database import (
     get_latest_feature_snapshot,
     get_latest_verdict,
+    get_latest_verdict_since,
     insert_research_verdict,
     get_all_latest_reports_for_ticker,  # still used for macro signals
     get_recent_news_events_for_ticker,
@@ -29,6 +32,7 @@ from feature_store import build_feature_snapshot
 load_dotenv()
 logger     = logging.getLogger(__name__)
 MODEL_NAME = "deepseek-chat"
+RESEARCHER_WORKERS = 4
 
 
 def _build_research_packet(ticker: str) -> dict:
@@ -225,8 +229,10 @@ def save_research_verdict(
 # ── System prompt ─────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
-You are the researcher for a daily event-driven swing trading system.
-Your job is to decide whether a ticker has a durable 1-5 trading day edge.
+You are the researcher for an aggressive daily event-driven trading system.
+Your job is to decide whether a ticker has a tradeable edge versus SPY over the
+next 1-3 trading days, and to surface actionable long ideas more often than the
+prior conservative system.
 
 PROCESS:
 1. Call get_ticker_data(ticker) — get all news, price, and macro data.
@@ -235,16 +241,16 @@ PROCESS:
 4. Decide a verdict and call save_research_verdict(...).
 
 PRIMARY OBJECTIVE:
-  - Prefer precision over activity.
-  - HOLD is the correct answer when the edge is weak, crowded, stale, or mostly noise.
-  - Only issue BUY/SELL when the evidence suggests follow-through over the next 1-5 trading days.
+  - Find the best deployable trade today, not the safest possible no-trade answer.
+  - Prefer fresh catalysts, direct causal links, and setups with plausible follow-through over the next 1-3 trading days.
+  - HOLD is allowed, but use it only when the setup is genuinely stale, fully exhausted, or too weak to beat simply holding SPY.
 
 VERDICT CALIBRATION:
-  STRONG_BUY  — multiple high-quality sources, clear positive catalyst, likely 1-5 day continuation. Conviction 0.82+
-  BUY         — good but not overwhelming evidence of positive follow-through. Conviction 0.68–0.81
-  HOLD        — conflicting, weak, generic, low-novelty, or already fully-explained news. Use freely.
-  SELL        — good but not overwhelming evidence of negative follow-through. Conviction 0.68–0.81
-  STRONG_SELL — multiple high-quality sources, clear negative catalyst, likely 1-5 day downside continuation. Conviction 0.82+
+  STRONG_BUY  — multiple high-quality sources, clear positive catalyst, likely 1-3 day continuation. Conviction 0.80+
+  BUY         — good evidence of positive follow-through or a direct macro linkage that still looks tradeable. Conviction 0.62–0.79
+  HOLD        — genuinely weak, stale, crowded, contradictory, or already-exhausted setup.
+  SELL        — good evidence of negative follow-through. Conviction 0.62–0.79
+  STRONG_SELL — multiple high-quality sources, clear negative catalyst, likely 1-3 day downside continuation. Conviction 0.80+
 
 ONLY TRADE WHEN:
   - There is a company-specific catalyst, or a direct sector/macro catalyst.
@@ -255,7 +261,8 @@ AVOID FALSE POSITIVES:
   - Generic market commentary is usually HOLD.
   - Broad "AI is exciting" or "stocks are volatile" headlines are not enough.
   - Do not force action because a stock is moving; explain whether the move is likely exhausted.
-  - If data quality is weak or the signal is mostly inferred, choose HOLD.
+  - If a setup is fresh and directionally coherent, lean toward BUY/SELL instead of reflexive HOLD.
+  - Use SPY as the mental benchmark: if this name probably cannot outperform SPY over the next 1-3 sessions, choose HOLD.
 
 READING THE DATA:
   - Start with the structured signal summary. It tells you source diversity, signal quality, event tags, price context, and triage status.
@@ -299,6 +306,8 @@ def run_researcher(ticker: str, run_date: str | None = None) -> dict:
 
     logger.info(f"[researcher] Debating {ticker}: {reason}")
     agent = build_researcher_agent()
+    prior_verdict = get_latest_verdict(ticker)
+    started_at = datetime.now(timezone.utc)
 
     try:
         agent.invoke({
@@ -306,7 +315,7 @@ def run_researcher(ticker: str, run_date: str | None = None) -> dict:
                 "role":    "user",
                 "content": (
                     f"Research {ticker}. Get all available data, "
-                    f"decide whether it has a real 1-5 day follow-through edge, "
+                    f"decide whether it has a real 1-3 day follow-through edge versus SPY, "
                     f"then save your verdict."
                 ),
             }]
@@ -315,15 +324,33 @@ def run_researcher(ticker: str, run_date: str | None = None) -> dict:
         logger.error(f"[researcher] Agent failed for {ticker}: {e}")
         return {"error": str(e), "ticker": ticker}
 
-    verdict = get_latest_verdict(ticker)
+    verdict = get_latest_verdict_since(
+        ticker,
+        created_at_or_after=started_at,
+        previous_id=prior_verdict["id"] if prior_verdict else None,
+    )
     if verdict:
         if run_date:
             mark_universe_candidate_reviewed(run_date, ticker, trade_ready=True)
         logger.info(f"[researcher] {ticker} → {verdict['verdict']} ({verdict['conviction']:.0%})")
         return verdict
 
-    return {"error": "Agent ran but no verdict was saved.", "ticker": ticker}
+    return {"error": "Agent ran but no fresh verdict was saved for this invocation.", "ticker": ticker}
 
 
 def run_researcher_batch(tickers: list[str], run_date: str | None = None) -> list[dict]:
-    return [run_researcher(t, run_date=run_date) for t in tickers]
+    if not tickers:
+        return []
+
+    results_by_ticker: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(RESEARCHER_WORKERS, len(tickers)), thread_name_prefix="researcher") as pool:
+        futures = {pool.submit(run_researcher, ticker, run_date): ticker for ticker in tickers}
+        for future in as_completed(futures):
+            ticker = futures[future]
+            try:
+                results_by_ticker[ticker] = future.result()
+            except Exception as exc:
+                logger.error("[researcher] Batch failure for %s: %s", ticker, exc)
+                results_by_ticker[ticker] = {"ticker": ticker, "error": str(exc)}
+
+    return [results_by_ticker[ticker] for ticker in tickers]

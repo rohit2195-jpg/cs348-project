@@ -11,6 +11,7 @@ This repo now includes a repo-local Codex team marketplace at `.agents/plugins/m
 - `cs348-bug-fixer`: Reproduces issues, narrows root cause, and lands the smallest defensible fix.
 - `cs348-qa-validator`: Chooses and runs validation relevant to the change, then reports residual risk.
 - `cs348-trading-specialist`: Handles Alpaca, quotes, order flow, portfolio math, and market-data edge cases.
+- `cs348-plan-guardian`: Compares implementation to the original plan, detects drift, and applies focused repairs.
 
 ## Suggested Handoffs
 
@@ -18,6 +19,7 @@ This repo now includes a repo-local Codex team marketplace at `.agents/plugins/m
 - API or DB change: `cs348-team-lead` -> `cs348-backend-engineer` -> `cs348-code-reviewer` -> `cs348-qa-validator`
 - Trading behavior issue: `cs348-team-lead` -> `cs348-trading-specialist` -> `cs348-bug-fixer` -> `cs348-qa-validator`
 - Cross-stack feature: `cs348-team-lead` coordinates `cs348-ui-engineer` and `cs348-backend-engineer`, then hands off to review and QA
+- Drift from intended scope or behavior: `cs348-team-lead` or `cs348-plan-guardian` -> targeted specialist -> `cs348-code-reviewer` -> `cs348-qa-validator`
 
 ## Repo Context Baked Into Prompts
 

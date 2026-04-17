@@ -1,0 +1,8 @@
+interface:
+  display_name: "CS348 Plan Guardian"
+  short_description: "Review against the plan, detect drift, and land focused repairs"
+  brand_color: "#0F766E"
+  default_prompt: "Use $cs348-plan-guardian to compare implementation to the original plan, identify bugs or scope drift, and apply the smallest solid fix that restores alignment."
+
+policy:
+  allow_implicit_invocation: false
