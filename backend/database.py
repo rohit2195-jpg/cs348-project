@@ -4,11 +4,13 @@ Stores portfolio positions, order history, analyst reports, and research verdict
 """
 
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Enum, Text, Index
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta
 import enum
 import json
+import time
 
 
 DATABASE_URL = "sqlite:///my_database.db"
@@ -62,6 +64,10 @@ class OrderHistory(Base):
     status           = Column(Enum(OrderStatus), default=OrderStatus.pending)
     trade_type       = Column(Enum(TradeType),   nullable=False)
     alpaca_order_id  = Column(String(64),  nullable=True)
+
+Index("ix_order_history_symbol_timestamp", OrderHistory.symbol, OrderHistory.timestamp)
+Index("ix_order_history_timestamp", OrderHistory.timestamp)
+Index("ix_order_history_status_timestamp", OrderHistory.status, OrderHistory.timestamp)
 
 
 class RawNews(Base):
@@ -265,12 +271,44 @@ class Watchlist(Base):
     triggered_at     = Column(DateTime,    nullable=True)
     triggered_price  = Column(Float,       nullable=True)
 
+Index("ix_watchlist_triggered", Watchlist.triggered)
+Index("ix_watchlist_triggered_target_price", Watchlist.triggered, Watchlist.target_price)
+
+def _ensure_indexes():
+    statements = (
+        "CREATE INDEX IF NOT EXISTS ix_order_history_symbol_timestamp "
+        "ON order_history (symbol, timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_order_history_timestamp "
+        "ON order_history (timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_order_history_status_timestamp "
+        "ON order_history (status, timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_watchlist_triggered "
+        "ON watchlist (triggered)",
+        "CREATE INDEX IF NOT EXISTS ix_watchlist_triggered_target_price "
+        "ON watchlist (triggered, target_price)",
+    )
+    last_error = None
+    for attempt in range(3):
+        try:
+            with engine.begin() as conn:
+                for statement in statements:
+                    conn.exec_driver_sql(statement)
+            return True
+        except OperationalError as exc:
+            last_error = exc
+            if "database is locked" not in str(exc).lower() or attempt == 2:
+                break
+            time.sleep(1.0)
+    print(f"[database] warning: could not ensure indexes: {last_error}")
+    return False
+
 
 Base.metadata.create_all(bind=engine)
 
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _ensure_indexes()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
