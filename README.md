@@ -2,7 +2,7 @@
 
 A stock trading simulator built on top of Alpaca paper trading. The project provides a React dashboard for placing simulated trades with live market data, tracking portfolio performance, viewing order history, and managing a watchlist with price alerts.
 
-Trades are submitted to Alpaca's paper environment, while local application state such as portfolio positions, order history, and watchlist entries is stored in SQLite.
+Trades are submitted to Alpaca's paper environment, while local application state such as portfolio positions, order history, and watchlist entries is stored in SQLite. testing
 
 ## Features
 
