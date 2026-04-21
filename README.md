@@ -138,6 +138,32 @@ export const API = "http://127.0.0.1:5000/api";
 
 If you change the backend port, update that file as well.
 
+For deploys, the frontend can also read `VITE_API_BASE_URL` at build time.
+See [frontend/.env.example](/Users/rohitsattuluri/Projects/cs348-project/frontend/.env.example:1).
+
+## Frontend Deploy To S3
+
+This repo now includes [deploy-frontend-s3.yml](/Users/rohitsattuluri/Projects/cs348-project/.github/workflows/deploy-frontend-s3.yml:1), a GitHub Actions workflow that:
+
+- runs on every push to `main`
+- installs the frontend dependencies
+- builds the Vite app from `frontend/`
+- syncs `frontend/dist/` to your S3 bucket with `--delete` so S3 matches the latest commit
+
+Set these GitHub repository settings before enabling the deploy:
+
+- `Settings -> Secrets and variables -> Actions -> Secrets`
+- add `AWS_ACCESS_KEY_ID`
+- add `AWS_SECRET_ACCESS_KEY`
+
+- `Settings -> Secrets and variables -> Actions -> Variables`
+- add `AWS_REGION` such as `us-east-1`
+- add `S3_BUCKET` with just the bucket name
+- add `VITE_API_BASE_URL` with your deployed backend URL, for example `https://api.example.com/api`
+
+The AWS credentials need permission to upload and delete objects in that bucket.
+If you later put CloudFront in front of S3, add an invalidation step after the sync.
+
 ## Validation
 
 From the repo root:
