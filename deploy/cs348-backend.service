@@ -1,0 +1,15 @@
+[Unit]
+Description=CS348 Flask backend
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/cs348-project/backend
+EnvironmentFile=/home/ubuntu/cs348-project/backend/.env
+ExecStart=/home/ubuntu/cs348-project/backend/.venv/bin/python server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

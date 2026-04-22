@@ -115,7 +115,7 @@ Backend default URL:
 http://127.0.0.1:5000
 ```
 
-The Flask app runs on port `5000` in [backend/server.py](/Users/rohitsattuluri/Projects/cs348-project/backend/server.py:788).
+The Flask app runs on port `5000` in [backend/server.py](/Users/rohitsattuluri/Projects/cs348-project/backend/server.py:1).
 
 ### Start the frontend
 
@@ -163,6 +163,76 @@ Set these GitHub repository settings before enabling the deploy:
 
 The AWS credentials need permission to upload and delete objects in that bucket.
 If you later put CloudFront in front of S3, add an invalidation step after the sync.
+
+## Backend Deploy To EC2
+
+Do not deploy `backend/.venv` from your Mac to EC2.
+Create a fresh Linux virtualenv on the EC2 instance instead.
+
+Files included for this flow:
+
+- [backend/requirements.txt](/Users/rohitsattuluri/Projects/cs348-project/backend/requirements.txt:1)
+- [backend/.env.example](/Users/rohitsattuluri/Projects/cs348-project/backend/.env.example:1)
+- [deploy/cs348-backend.service](/Users/rohitsattuluri/Projects/cs348-project/deploy/cs348-backend.service:1)
+
+On an Ubuntu EC2 instance:
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip git
+git clone https://github.com/rohit2195-jpg/cs348-project.git
+cd cs348-project/backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+playwright install chromium
+cp .env.example .env
+```
+
+Then edit `backend/.env` with your real API keys.
+
+Recommended production values:
+
+- `APP_HOST=0.0.0.0`
+- `APP_PORT=5000`
+- `APP_DEBUG=false`
+
+Quick manual run test:
+
+```bash
+cd ~/cs348-project/backend
+source .venv/bin/activate
+python server.py
+```
+
+If that works, install the `systemd` service:
+
+```bash
+sudo cp ~/cs348-project/deploy/cs348-backend.service /etc/systemd/system/cs348-backend.service
+sudo systemctl daemon-reload
+sudo systemctl enable cs348-backend
+sudo systemctl start cs348-backend
+sudo systemctl status cs348-backend
+```
+
+Useful service commands:
+
+- `sudo journalctl -u cs348-backend -f`
+- `sudo systemctl restart cs348-backend`
+- `sudo systemctl stop cs348-backend`
+
+Open the EC2 security group for your backend port if you are calling it directly:
+
+- allow inbound TCP `5000` from the IP range you want to permit
+
+Then set the frontend GitHub variable `VITE_API_BASE_URL` to:
+
+```text
+http://YOUR_EC2_PUBLIC_IP:5000/api
+```
+
+For a cleaner production setup, put Nginx in front of the Flask app and expose port `80` or `443` instead of exposing `5000` directly.
 
 ## Validation
 

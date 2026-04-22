@@ -1,0 +1,16 @@
+alpaca-py
+beautifulsoup4
+certifi
+chromadb
+feedparser
+Flask
+langchain
+langchain-deepseek
+ollama
+playwright
+python-dotenv
+requests
+SQLAlchemy
+tiktoken
+urllib3
+yfinance

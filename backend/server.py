@@ -13,8 +13,9 @@ Endpoints:
   POST /api/sell             — Place a sell order { symbol, quantity }
 """
 
-from flask import Flask, jsonify, request, make_response
+import os
 from datetime import datetime
+from flask import Flask, jsonify, request, make_response
 import traceback
 import threading
 import time
@@ -785,4 +786,7 @@ def portfolio_snapshot():
 # use_reloader=False prevents the double-process issue that breaks CORS in Chrome
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000, use_reloader=False)
+    host = os.getenv("APP_HOST", "127.0.0.1")
+    port = int(os.getenv("APP_PORT", "5000"))
+    debug = os.getenv("APP_DEBUG", "true").lower() in {"1", "true", "yes", "on"}
+    app.run(host=host, port=port, debug=debug, use_reloader=False)
