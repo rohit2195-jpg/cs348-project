@@ -193,6 +193,14 @@ def require_value(value, field_name: str):
     return value
 
 
+# ── Health check ───────────────────────────────────────────────────────────────
+
+@app.route("/", methods=["GET"])
+def hello_world():
+    print("[health] hello world endpoint hit")
+    return "hello world", 200
+
+
 # ── Account ───────────────────────────────────────────────────────────────────
 
 @app.route("/api/account", methods=["GET"])
