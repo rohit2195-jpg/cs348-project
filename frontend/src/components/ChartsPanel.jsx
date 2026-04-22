@@ -3,6 +3,10 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceL
 import { CustomTooltip } from './helpers';
 
 function ChartsPanel({ chartData, loading }) {
+  const firstSymbol = chartData?.stocks && Object.keys(chartData.stocks)[0]
+    ? Object.keys(chartData.stocks)[0]
+    : null;
+
   return (
     <div className="charts-panel">
       <div className="panel-title" style={{ borderBottom: "1px solid var(--border)" }}>▸ CHARTS</div>
@@ -17,7 +21,7 @@ function ChartsPanel({ chartData, loading }) {
             </div>
           ) : (
             <>
-              <ResponsiveContainer width="100%" height={72}>
+              <ResponsiveContainer width="100%" height={84}>
                 <LineChart data={chartData.portfolio?.map((p, i) => ({
                   date: p.date,
                   portfolio: p.value,
@@ -30,7 +34,7 @@ function ChartsPanel({ chartData, loading }) {
                   <Line type="monotone" dataKey="spy"       stroke="var(--warn)"   dot={false} strokeWidth={1}   name="SPY" strokeDasharray="3 3" />
                 </LineChart>
               </ResponsiveContainer>
-              <div style={{ display: "flex", gap: 16, fontSize: 10, color: "var(--text-dim)", marginTop: 2 }}>
+              <div className="chart-legend">
                 <span style={{ color: "var(--accent)" }}>── Portfolio</span>
                 <span style={{ color: "var(--warn)" }}>- - SPY</span>
               </div>
@@ -41,8 +45,8 @@ function ChartsPanel({ chartData, loading }) {
         {/* First stock chart */}
         <div className="chart-block">
           <div className="chart-label">
-            {chartData?.stocks && Object.keys(chartData.stocks)[0]
-              ? `${Object.keys(chartData.stocks)[0]} — 20d price`
+            {firstSymbol
+              ? `${firstSymbol} — 20d price`
               : "Stock Price (20d)"}
           </div>
           {loading || !chartData ? (
@@ -50,20 +54,26 @@ function ChartsPanel({ chartData, loading }) {
               {loading ? <>LOADING<span className="blink">_</span></> : "NO DATA"}
             </div>
           ) : (() => {
-            const sym  = Object.keys(chartData.stocks || {})[0];
+            const sym  = firstSymbol;
             const data = chartData.stocks?.[sym] || [];
             if (!data.length) return <div className="empty">// NO STOCK DATA</div>;
             const first = data[0]?.close;
             return (
-              <ResponsiveContainer width="100%" height={72}>
-                <LineChart data={data}>
-                  <XAxis dataKey="date" hide />
-                  <YAxis hide domain={["auto", "auto"]} />
-                  <Tooltip content={<CustomTooltip />} formatter={(v) => [`$${v}`, sym]} />
-                  <ReferenceLine y={first} stroke="var(--accent3)" strokeDasharray="2 2" />
-                  <Line type="monotone" dataKey="close" stroke="var(--accent)" dot={false} strokeWidth={1.5} name={sym} />
-                </LineChart>
-              </ResponsiveContainer>
+              <>
+                <ResponsiveContainer width="100%" height={84}>
+                  <LineChart data={data}>
+                    <XAxis dataKey="date" hide />
+                    <YAxis hide domain={["auto", "auto"]} />
+                    <Tooltip content={<CustomTooltip />} formatter={(v) => [`$${v}`, sym]} />
+                    <ReferenceLine y={first} stroke="var(--accent3)" strokeDasharray="2 2" />
+                    <Line type="monotone" dataKey="close" stroke="var(--accent)" dot={false} strokeWidth={1.5} name={sym} />
+                  </LineChart>
+                </ResponsiveContainer>
+                <div className="chart-legend">
+                  <span style={{ color: "var(--accent)" }}>── {sym}</span>
+                  <span style={{ color: "var(--accent3)" }}>- - OPENING BASE</span>
+                </div>
+              </>
             );
           })()}
         </div>

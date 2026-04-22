@@ -141,117 +141,6 @@ If you change the backend port, update that file as well.
 For deploys, the frontend can also read `VITE_API_BASE_URL` at build time.
 See [frontend/.env.example](/Users/rohitsattuluri/Projects/cs348-project/frontend/.env.example:1).
 
-## Frontend Deploy To S3
-
-This repo now includes [deploy-frontend-s3.yml](/Users/rohitsattuluri/Projects/cs348-project/.github/workflows/deploy-frontend-s3.yml:1), a GitHub Actions workflow that:
-
-- runs on every push to `main`
-- installs the frontend dependencies
-- builds the Vite app from `frontend/`
-- syncs `frontend/dist/` to your S3 bucket with `--delete` so S3 matches the latest commit
-
-Set these GitHub repository settings before enabling the deploy:
-
-- `Settings -> Secrets and variables -> Actions -> Secrets`
-- add `AWS_ACCESS_KEY_ID`
-- add `AWS_SECRET_ACCESS_KEY`
-
-- `Settings -> Secrets and variables -> Actions -> Variables`
-- add `AWS_REGION` such as `us-east-1`
-- add `S3_BUCKET` with just the bucket name
-- add `VITE_API_BASE_URL` with your deployed backend URL, for example `https://api.example.com/api`
-
-The AWS credentials need permission to upload and delete objects in that bucket.
-If you later put CloudFront in front of S3, add an invalidation step after the sync.
-
-## Backend Deploy To EC2
-
-Do not deploy `backend/.venv` from your Mac to EC2.
-Create a fresh Linux virtualenv on the EC2 instance instead.
-
-Files included for this flow:
-
-- [backend/requirements.txt](/Users/rohitsattuluri/Projects/cs348-project/backend/requirements.txt:1)
-- [backend/.env.example](/Users/rohitsattuluri/Projects/cs348-project/backend/.env.example:1)
-- [deploy/cs348-backend.service](/Users/rohitsattuluri/Projects/cs348-project/deploy/cs348-backend.service:1)
-
-On an Ubuntu EC2 instance:
-
-```bash
-sudo apt update
-sudo apt install -y python3 python3-venv python3-pip git
-git clone https://github.com/rohit2195-jpg/cs348-project.git
-cd cs348-project/backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-playwright install chromium
-cp .env.example .env
-```
-
-Then edit `backend/.env` with your real API keys.
-
-Recommended production values:
-
-- `APP_HOST=0.0.0.0`
-- `APP_PORT=5000`
-- `APP_DEBUG=false`
-
-Quick manual run test:
-
-```bash
-cd ~/cs348-project/backend
-source .venv/bin/activate
-python server.py
-```
-
-If that works, install the `systemd` service:
-
-```bash
-sudo cp ~/cs348-project/deploy/cs348-backend.service /etc/systemd/system/cs348-backend.service
-sudo systemctl daemon-reload
-sudo systemctl enable cs348-backend
-sudo systemctl start cs348-backend
-sudo systemctl status cs348-backend
-```
-
-Useful service commands:
-
-- `sudo journalctl -u cs348-backend -f`
-- `sudo systemctl restart cs348-backend`
-- `sudo systemctl stop cs348-backend`
-
-Open the EC2 security group for your backend port if you are calling it directly:
-
-- allow inbound TCP `5000` from the IP range you want to permit
-
-Then set the frontend GitHub variable `VITE_API_BASE_URL` to:
-
-```text
-http://YOUR_EC2_PUBLIC_IP:5000/api
-```
-
-For a cleaner production setup, put Nginx in front of the Flask app and expose port `80` or `443` instead of exposing `5000` directly.
-
-## Validation
-
-From the repo root:
-
-```bash
-npm run validate
-```
-
-Available validation commands:
-
-- `npm run validate` runs frontend and backend checks
-- `npm run validate:frontend` runs frontend lint and build
-- `npm run validate:backend` runs backend-only validation
-
-The validation script lives at [scripts/validate.sh](/Users/rohitsattuluri/Projects/cs348-project/scripts/validate.sh:1).
-
-## Common Development Notes
-
 ### SQLite database location
 
 The application uses a local SQLite database:
@@ -259,25 +148,6 @@ The application uses a local SQLite database:
 - `backend/my_database.db`
 
 Tables and indexes are managed by [backend/database.py](/Users/rohitsattuluri/Projects/cs348-project/backend/database.py:1).
-
-### Database locked errors
-
-If you see `sqlite3.OperationalError: database is locked`, another process is likely already using the database file.
-
-Typical fixes:
-
-- Stop any previous backend process still running
-- Wait a few seconds and restart the backend
-- Avoid launching multiple backend servers against the same local DB file
-
-### macOS port 5000 conflict
-
-On some Macs, port `5000` conflicts with AirPlay Receiver.
-
-If that happens, either:
-
-- disable AirPlay Receiver in System Settings, or
-- change the Flask port in [backend/server.py](/Users/rohitsattuluri/Projects/cs348-project/backend/server.py:788) and update [frontend/src/components/Config.js](/Users/rohitsattuluri/Projects/cs348-project/frontend/src/components/Config.js:5)
 
 ## Core API Endpoints
 
@@ -360,6 +230,14 @@ When making changes:
 2. Keep backend and frontend ports in sync.
 3. Avoid running multiple backend instances against the same SQLite DB.
 4. Prefer updating this README when setup or runtime behavior changes.
+
+## Use of AI in This Project
+
+AI was used for some parts of the coding in this project, mainly to offload repetitive programming tasks and help polish the user interface and frontend experience.
+
+I designed the database structure myself using DB Browser for SQLite. I also wrote the initial database interaction logic for selecting from tables such as `order_history` and `portfolio`, then used AI assistance to refine that code and extend the same patterns to additional tables as the project grew.
+
+Even though I used some AI-assisted coding, I did not rely on its generated output blindly. For each change, I reviewed the code carefully to understand how it would affect the existing application and compared it against the behavior I originally intended. Because I understood the codebase thoroughly, I was able to diagnose and fix issues that came up during testing, including cases where the frontend called the wrong endpoints and where the `portfolio` table was not producing the correct profit values.
 
 ## License
 

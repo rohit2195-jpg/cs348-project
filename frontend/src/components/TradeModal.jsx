@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 
 import { API } from "./Config.js";
 
-function TradeModal({ mode, onClose, onSuccess }) {
+function TradeModal({ mode, onClose, onSuccess, shortcutOpenedAt = 0 }) {
   const [symbol,   setSymbol]   = useState("");
   const [quantity, setQuantity] = useState("");
   const [quote,    setQuote]    = useState(null);
@@ -55,6 +55,15 @@ function TradeModal({ mode, onClose, onSuccess }) {
   };
 
   const est = quote && quantity ? (quote * parseInt(quantity || 0)).toFixed(2) : null;
+  const shouldIgnoreShortcutEcho = (e) => (
+    shortcutOpenedAt
+    && Date.now() - shortcutOpenedAt < 250
+    && e.key.length === 1
+    && !e.ctrlKey
+    && !e.metaKey
+    && !e.altKey
+    && e.currentTarget.value === ""
+  );
 
   return (
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -65,7 +74,13 @@ function TradeModal({ mode, onClose, onSuccess }) {
           <input ref={symRef} value={symbol}
             onChange={(e) => setSymbol(e.target.value.toUpperCase())}
             onBlur={() => fetchQuote(symbol)}
-            onKeyDown={(e) => e.key === "Enter" && fetchQuote(symbol)}
+            onKeyDown={(e) => {
+              if (shouldIgnoreShortcutEcho(e)) {
+                e.preventDefault();
+                return;
+              }
+              if (e.key === "Enter") fetchQuote(symbol);
+            }}
             placeholder="AAPL" maxLength={6} />
         </div>
         {quote && <div className="live-quote">${quote.toFixed(2)}</div>}

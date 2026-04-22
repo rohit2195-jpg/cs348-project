@@ -1,5 +1,5 @@
 // Dashboard.jsx — Main state container: data fetching, auto-refresh, keyboard shortcuts
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { SettingsPanel } from '../Settings';
 import ReportPanel from './ReportPanel';
 import WatchlistPanel from './WatchListPanel';
@@ -24,6 +24,8 @@ export default function Dashboard() {
   const [modal,      setModal]      = useState(null); // "buy"|"sell"|"quote"|"settings"|null
   const [flash,      setFlash]      = useState({ msg: "", err: false });
   const [wlAlerts,   setWlAlerts]   = useState(0);  // unread watchlist alerts
+  const [shortcutOpenedAt, setShortcutOpenedAt] = useState(0);
+  const shortcutOpenedModal = useRef(false);
 
   // ── Flash message ───────────────────────────────────────────────────────────
   const showFlash = useCallback((msg, isErr = false) => {
@@ -78,24 +80,60 @@ export default function Dashboard() {
   // Shortcuts are disabled when any modal is open (user is typing in inputs)
   useEffect(() => {
     const handler = (e) => {
+      const key = e.key.toLowerCase();
+
       // Don't fire shortcuts if user is typing in an input/textarea
       const tag = document.activeElement?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      const isEditable = document.activeElement?.isContentEditable;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || isEditable) return;
 
-      switch (e.key.toLowerCase()) {
-        case 'b': if (!modal) setModal('buy');     break;
-        case 's': if (!modal) setModal('sell');    break;
-        case 'q': if (!modal) setModal('quote');   break;
-        case 'r': if (!modal) fetchAll();          break;
-        case 'escape': setModal(null);             break;
-        case 'w': if (!modal) setModal('watchlist');  break;
-        case 'f': if (!modal) setModal('report');   break;
+      switch (key) {
+        case 'b':
+        case 's':
+        case 'q':
+        case 'w':
+        case 'f':
+          if (!modal) {
+            e.preventDefault();
+            shortcutOpenedModal.current = true;
+            setShortcutOpenedAt(Date.now());
+            setModal(
+              key === 'b' ? 'buy'
+              : key === 's' ? 'sell'
+              : key === 'q' ? 'quote'
+              : key === 'w' ? 'watchlist'
+              : 'report'
+            );
+          }
+          break;
+        case 'r':
+          if (!modal) {
+            e.preventDefault();
+            fetchAll();
+          }
+          break;
+        case 'escape':
+          shortcutOpenedModal.current = false;
+          setModal(null);
+          break;
         default: break;
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [modal, fetchAll]);
+
+  useEffect(() => {
+    if (!modal || !shortcutOpenedModal.current) return;
+
+    const clearShortcutFlag = () => {
+      shortcutOpenedModal.current = false;
+      window.removeEventListener('keyup', clearShortcutFlag, true);
+    };
+
+    window.addEventListener('keyup', clearShortcutFlag, true);
+    return () => window.removeEventListener('keyup', clearShortcutFlag, true);
+  }, [modal]);
 
   // ── Trade success handler (pending poll) ────────────────────────────────────
   const handleTradeSuccess = useCallback((msg, pendingInfo = null) => {
@@ -160,57 +198,62 @@ export default function Dashboard() {
 
         <PortfolioPanel positions={positions} loading={loading} />
         <OrdersPanel    orders={orders}       loading={loading} />
-        <ChartsPanel    chartData={chartData} loading={loading} />
+        <div className="lower-panel">
+          <ChartsPanel chartData={chartData} loading={loading} />
 
-        <div className="statusbar">
-          <button className={`cmd-btn ${modal === 'buy'   ? 'active' : ''}`} onClick={() => setModal("buy")}>
-            [B] BUY
-          </button>
-          <button className={`cmd-btn ${modal === 'sell'  ? 'active' : ''}`} onClick={() => setModal("sell")}>
-            [S] SELL
-          </button>
-          <button className={`cmd-btn ${modal === 'quote' ? 'active' : ''}`} onClick={() => setModal("quote")}>
-            [Q] QUOTE
-          </button>
-          <button className="cmd-btn" onClick={fetchAll}>
-            [R] REFRESH
-          </button>
-          <button className={`cmd-btn ${modal === 'report' ? 'active' : ''}`} onClick={() => setModal("report")}>
-            [F] FILTER
-          </button>
-          <button
-            className={`cmd-btn ${modal === 'watchlist' ? 'active' : ''}`}
-            onClick={() => setModal("watchlist")}
-            style={{ position: "relative" }}
-          >
-            [W] WATCH
-            {wlAlerts > 0 && (
-              <span style={{
-                position: "absolute", top: -6, right: -6,
-                background: "var(--loss)", color: "#fff",
-                borderRadius: "50%", width: 16, height: 16,
-                fontSize: 9, display: "flex", alignItems: "center",
-                justifyContent: "center", fontFamily: "monospace",
-              }}>{wlAlerts}</span>
-            )}
-          </button>
+          <div className="statusbar">
+            <div className="statusbar-left">
+              <span className="status-label">COMMAND DECK</span>
+              <button className={`cmd-btn ${modal === 'buy'   ? 'active' : ''}`} onClick={() => setModal("buy")}>
+                [B] BUY
+              </button>
+              <button className={`cmd-btn ${modal === 'sell'  ? 'active' : ''}`} onClick={() => setModal("sell")}>
+                [S] SELL
+              </button>
+              <button className={`cmd-btn ${modal === 'quote' ? 'active' : ''}`} onClick={() => setModal("quote")}>
+                [Q] QUOTE
+              </button>
+              <button className="cmd-btn" onClick={fetchAll}>
+                [R] REFRESH
+              </button>
+              <button className={`cmd-btn ${modal === 'report' ? 'active' : ''}`} onClick={() => setModal("report")}>
+                [F] FILTER
+              </button>
+              <button
+                className={`cmd-btn cmd-btn-watch ${modal === 'watchlist' ? 'active' : ''}`}
+                onClick={() => setModal("watchlist")}
+              >
+                [W] WATCH
+                {wlAlerts > 0 && <span className="watch-alert">{wlAlerts}</span>}
+              </button>
+            </div>
 
-          {flash.msg && (
-            <span className={`flash-msg ${flash.err ? "err" : ""}`}>
-              {flash.err ? "✗" : "✓"} {flash.msg}
-            </span>
-          )}
+            <div className="statusbar-right">
+              {flash.msg ? (
+                <span className={`flash-msg ${flash.err ? "err" : ""}`}>
+                  {flash.err ? "✗" : "✓"} {flash.msg}
+                </span>
+              ) : (
+                <span className="flash-msg idle">SYSTEM NOMINAL</span>
+              )}
 
-          <span className="kbd-hint">B · S · Q · R · F · W · ESC</span>
+              <span className="kbd-hint">B · S · Q · R · F · W · ESC</span>
+            </div>
+          </div>
         </div>
 
       </div>
 
       {(modal === "buy" || modal === "sell") && (
-        <TradeModal mode={modal} onClose={() => setModal(null)} onSuccess={handleTradeSuccess} />
+        <TradeModal
+          mode={modal}
+          shortcutOpenedAt={shortcutOpenedAt}
+          onClose={() => setModal(null)}
+          onSuccess={handleTradeSuccess}
+        />
       )}
       {modal === "quote" && (
-        <QuoteModal onClose={() => setModal(null)} />
+        <QuoteModal shortcutOpenedAt={shortcutOpenedAt} onClose={() => setModal(null)} />
       )}
       {modal === "settings" && (
         <SettingsPanel onClose={() => setModal(null)} />

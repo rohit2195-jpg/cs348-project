@@ -5,7 +5,7 @@ import { CustomTooltip } from './helpers';
 
 import { API } from "./Config.js";
 
-function QuoteModal({ onClose }) {
+function QuoteModal({ onClose, shortcutOpenedAt = 0 }) {
   const [symbol,  setSymbol]  = useState("");
   const [quote,   setQuote]   = useState(null);
   const [loading, setLoading] = useState(false);
@@ -30,6 +30,16 @@ function QuoteModal({ onClose }) {
     setLoading(false);
   };
 
+  const shouldIgnoreShortcutEcho = (e) => (
+    shortcutOpenedAt
+    && Date.now() - shortcutOpenedAt < 250
+    && e.key.length === 1
+    && !e.ctrlKey
+    && !e.metaKey
+    && !e.altKey
+    && e.currentTarget.value === ""
+  );
+
   return (
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal" style={{ maxWidth: 500 }}>
@@ -37,7 +47,13 @@ function QuoteModal({ onClose }) {
         <div className="field" style={{ display: "flex", gap: 8 }}>
           <input ref={inputRef} value={symbol}
             onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-            onKeyDown={(e) => e.key === "Enter" && fetchQuote()}
+            onKeyDown={(e) => {
+              if (shouldIgnoreShortcutEcho(e)) {
+                e.preventDefault();
+                return;
+              }
+              if (e.key === "Enter") fetchQuote();
+            }}
             placeholder="SYMBOL" maxLength={6} style={{ flex: 1 }} />
           <button className="cmd-btn" onClick={fetchQuote}>FETCH</button>
         </div>
