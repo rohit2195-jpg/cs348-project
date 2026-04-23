@@ -1,7 +1,7 @@
 // AccountHeader.jsx — Top bar: equity stats, market status, settings button
 import { fmtK } from './helpers';
 
-function AccountHeader({ account, lastUpdate, onSettings }) {
+function AccountHeader({ account, lastUpdate, onSettings, user, onLogout }) {
   return (
     <div className="header">
       <span className="header-title">TERMINAL<span className="blink">_</span></span>
@@ -19,6 +19,10 @@ function AccountHeader({ account, lastUpdate, onSettings }) {
             </div>
           ))}
           {lastUpdate && <span className="last-update">UPD {lastUpdate}</span>}
+          <div className="header-stat" style={{ minWidth: 110 }}>
+            <span className="header-stat-label">User</span>
+            <span className="header-stat-value">{user?.username || account.username}</span>
+          </div>
           <div className={`market-badge ${account.market_open ? "open" : "closed"}`} style={{ marginLeft: "auto" }}>
             {account.market_open ? "● MKT OPEN" : "● MKT CLOSED"}
           </div>
@@ -31,6 +35,11 @@ function AccountHeader({ account, lastUpdate, onSettings }) {
       <button className="cmd-btn" style={{ marginLeft: account ? "8px" : "auto" }} onClick={onSettings}>
         ⚙ CFG
       </button>
+      {account && (
+        <button className="cmd-btn" style={{ marginLeft: "8px" }} onClick={onLogout}>
+          EXIT
+        </button>
+      )}
     </div>
   );
 }

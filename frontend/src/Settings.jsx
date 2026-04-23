@@ -89,15 +89,16 @@ const STORAGE_KEY = "terminal_theme";
 // ── Context ───────────────────────────────────────────────────────────────────
 
 const ThemeContext = createContext(null);
+const DEFAULT_THEME = "light";
 
 export function ThemeProvider({ children }) {
   const [themeKey, setThemeKey] = useState(() => {
-    try { return localStorage.getItem(STORAGE_KEY) || "green"; }
-    catch { return "green"; }
+    try { return localStorage.getItem(STORAGE_KEY) || DEFAULT_THEME; }
+    catch { return DEFAULT_THEME; }
   });
 
   useEffect(() => {
-    const theme = THEMES[themeKey] || THEMES.green;
+    const theme = THEMES[themeKey] || THEMES[DEFAULT_THEME];
     const root  = document.documentElement;
     Object.entries(theme.vars).forEach(([k, v]) => root.style.setProperty(k, v));
     // Toggle light-mode class so App.jsx can suppress CRT effects

@@ -3,17 +3,23 @@ database.py — SQLite persistence layer
 Stores portfolio positions, order history, analyst reports, and research verdicts.
 """
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Enum, Text, Index
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Enum, Text, Index, ForeignKey, UniqueConstraint, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta
+from pathlib import Path
 import enum
+import hashlib
+import hmac
 import json
+import os
+import secrets
 import time
 
 
-DATABASE_URL = "sqlite:///my_database.db"
+DATABASE_PATH = Path(os.getenv("CS348_DATABASE_PATH", Path(__file__).resolve().parent / "my_database.db"))
+DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 engine       = create_engine(
     DATABASE_URL,
     echo=False,
@@ -303,12 +309,32 @@ def _ensure_indexes():
     return False
 
 
+def _column_exists(conn, table_name: str, column_name: str) -> bool:
+    rows = conn.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row[1] == column_name for row in rows)
+
+
+def _ensure_legacy_schema_compat():
+    """
+    Older local databases may be missing columns introduced later in the
+    single-user schema. Add them in-place so ORM queries and data migration work.
+    """
+    try:
+        with engine.begin() as conn:
+            if not _column_exists(conn, "order_history", "alpaca_order_id"):
+                conn.exec_driver_sql("ALTER TABLE order_history ADD COLUMN alpaca_order_id VARCHAR(64)")
+    except OperationalError as exc:
+        print(f"[database] warning: could not ensure legacy schema compatibility: {exc}")
+
+
 Base.metadata.create_all(bind=engine)
 
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _ensure_legacy_schema_compat()
     _ensure_indexes()
+    migrate_legacy_single_user_data()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1712,5 +1738,802 @@ def insert_simulation_position(
         session.commit()
         session.refresh(row)
         return row.id
+    finally:
+        session.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Multi-user simulated brokerage
+# ══════════════════════════════════════════════════════════════════════════════
+
+DEFAULT_SIM_STARTING_CASH = 100000.0
+SESSION_TTL_DAYS = 14
+LEGACY_TEST_USERNAME = "testuser"
+LEGACY_TEST_PASSWORD = "testpass123"
+LEGACY_TEST_CASH_BUFFER = DEFAULT_SIM_STARTING_CASH
+
+
+class TradeConcurrencyError(RuntimeError):
+    """Raised when SQLite cannot acquire the trade write lock in time."""
+
+
+class SimOrderStatus(enum.Enum):
+    filled = "filled"
+    canceled = "canceled"
+
+
+class SimTradeType(enum.Enum):
+    buy = "buy"
+    sell = "sell"
+
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(50), nullable=False, unique=True)
+    password_hash = Column(String(200), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    token = Column(String(64), nullable=False, unique=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+
+Index("ix_user_sessions_token", UserSession.token)
+Index("ix_user_sessions_user_id", UserSession.user_id)
+
+
+class SimAccount(Base):
+    __tablename__ = "sim_accounts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    cash = Column(Float, nullable=False, default=DEFAULT_SIM_STARTING_CASH)
+    starting_cash = Column(Float, nullable=False, default=DEFAULT_SIM_STARTING_CASH)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SimPosition(Base):
+    __tablename__ = "sim_positions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    symbol = Column(String(10), nullable=False)
+    avg_price = Column(Float, nullable=False)
+    quantity = Column(Integer, nullable=False)
+    opened_at = Column(String(10), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", name="uq_sim_positions_user_symbol"),
+    )
+
+Index("ix_sim_positions_user_symbol", SimPosition.user_id, SimPosition.symbol)
+
+
+class SimOrder(Base):
+    __tablename__ = "sim_orders"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    symbol = Column(String(10), nullable=False)
+    price = Column(Float, nullable=False)
+    quantity = Column(Integer, nullable=False)
+    trade_type = Column(Enum(SimTradeType), nullable=False)
+    status = Column(Enum(SimOrderStatus), nullable=False, default=SimOrderStatus.filled)
+    filled_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+Index("ix_sim_orders_user_created", SimOrder.user_id, SimOrder.created_at)
+Index("ix_sim_orders_user_symbol_created", SimOrder.user_id, SimOrder.symbol, SimOrder.created_at)
+
+
+class SimWatchlist(Base):
+    __tablename__ = "sim_watchlist"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    symbol = Column(String(10), nullable=False)
+    added_date = Column(String(10), nullable=False)
+    target_price = Column(Float, nullable=True)
+    target_direction = Column(Enum(TargetDirection), nullable=True)
+    notes = Column(String(500), nullable=True)
+    triggered = Column(Integer, default=0)
+    triggered_at = Column(DateTime, nullable=True)
+    triggered_price = Column(Float, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", name="uq_sim_watchlist_user_symbol"),
+    )
+
+Index("ix_sim_watchlist_user_triggered", SimWatchlist.user_id, SimWatchlist.triggered)
+
+
+def _normalize_username(username: str) -> str:
+    return (username or "").strip().lower()
+
+
+def _hash_password(password: str, salt: str | None = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 200000)
+    return f"{salt}${digest.hex()}"
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        salt, expected = stored_hash.split("$", 1)
+    except ValueError:
+        return False
+    candidate = _hash_password(password, salt).split("$", 1)[1]
+    return hmac.compare_digest(candidate, expected)
+
+
+def _now_utc() -> datetime:
+    return datetime.utcnow()
+
+
+def _sim_order_dict(row: SimOrder) -> dict:
+    timestamp = row.filled_at or row.created_at
+    return {
+        "id": row.id,
+        "symbol": row.symbol,
+        "price": row.price,
+        "quantity": row.quantity,
+        "trade_type": row.trade_type.value,
+        "status": row.status.value,
+        "timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+        "total_value": round(row.price * row.quantity, 2),
+    }
+
+
+def _sim_watchlist_dict(row: SimWatchlist) -> dict:
+    return {
+        "id": row.id,
+        "symbol": row.symbol,
+        "added_date": row.added_date,
+        "target_price": row.target_price,
+        "target_direction": row.target_direction.value if row.target_direction else None,
+        "notes": row.notes or "",
+        "triggered": row.triggered,
+        "triggered_at": row.triggered_at.strftime("%Y-%m-%d %H:%M") if row.triggered_at else None,
+        "triggered_price": row.triggered_price,
+    }
+
+
+def _ensure_sim_account(session, user_id: int, starting_cash: float = DEFAULT_SIM_STARTING_CASH) -> SimAccount:
+    row = session.query(SimAccount).filter(SimAccount.user_id == user_id).first()
+    if row:
+        return row
+    row = SimAccount(user_id=user_id, cash=starting_cash, starting_cash=starting_cash)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _normalize_account_nonnegative_cash(account: SimAccount) -> None:
+    if account.cash >= 0:
+        return
+    deficit = abs(account.cash)
+    account.starting_cash = round(account.starting_cash + deficit, 2)
+    account.cash = 0.0
+
+
+def _ensure_minimum_cash(account: SimAccount, minimum_cash: float) -> None:
+    if account.cash >= minimum_cash:
+        return
+    top_up = round(minimum_cash - account.cash, 2)
+    account.starting_cash = round(account.starting_cash + top_up, 2)
+    account.cash = round(account.cash + top_up, 2)
+
+
+def create_user(username: str, password: str, starting_cash: float = DEFAULT_SIM_STARTING_CASH) -> dict:
+    uname = _normalize_username(username)
+    if len(uname) < 3:
+        raise ValueError("Username must be at least 3 characters")
+    if len(password or "") < 6:
+        raise ValueError("Password must be at least 6 characters")
+
+    session = SessionLocal()
+    try:
+        if session.query(User).filter(User.username == uname).first():
+            raise ValueError("Username already exists")
+        user = User(username=uname, password_hash=_hash_password(password))
+        session.add(user)
+        session.flush()
+        _ensure_sim_account(session, user.id, starting_cash=starting_cash)
+        session.commit()
+        return {"id": user.id, "username": user.username}
+    finally:
+        session.close()
+
+
+def get_user_by_username(username: str) -> dict | None:
+    session = SessionLocal()
+    try:
+        uname = _normalize_username(username)
+        user = session.query(User).filter(User.username == uname).first()
+        if not user:
+            return None
+        return {"id": user.id, "username": user.username}
+    finally:
+        session.close()
+
+
+def authenticate_user(username: str, password: str) -> dict | None:
+    session = SessionLocal()
+    try:
+        uname = _normalize_username(username)
+        user = session.query(User).filter(User.username == uname).first()
+        if not user or not _verify_password(password, user.password_hash):
+            return None
+        return {"id": user.id, "username": user.username}
+    finally:
+        session.close()
+
+
+def create_user_session(user_id: int) -> str:
+    session = SessionLocal()
+    try:
+        token = secrets.token_hex(24)
+        row = UserSession(
+            user_id=user_id,
+            token=token,
+            expires_at=_now_utc() + timedelta(days=SESSION_TTL_DAYS),
+        )
+        session.add(row)
+        session.commit()
+        return token
+    finally:
+        session.close()
+
+
+def get_user_by_session(token: str | None) -> dict | None:
+    if not token:
+        return None
+    session = SessionLocal()
+    try:
+        now = _now_utc()
+        row = (
+            session.query(UserSession, User)
+            .join(User, User.id == UserSession.user_id)
+            .filter(UserSession.token == token)
+            .first()
+        )
+        if not row:
+            return None
+        session_row, user = row
+        if session_row.expires_at < now:
+            session.delete(session_row)
+            session.commit()
+            return None
+        return {"id": user.id, "username": user.username}
+    finally:
+        session.close()
+
+
+def delete_user_session(token: str | None) -> None:
+    if not token:
+        return
+    session = SessionLocal()
+    try:
+        row = session.query(UserSession).filter(UserSession.token == token).first()
+        if row:
+            session.delete(row)
+            session.commit()
+    finally:
+        session.close()
+
+
+def get_user_account(user_id: int) -> dict:
+    session = SessionLocal()
+    try:
+        row = _ensure_sim_account(session, user_id)
+        session.commit()
+        return {
+            "user_id": user_id,
+            "cash": round(row.cash, 2),
+            "starting_cash": round(row.starting_cash, 2),
+        }
+    finally:
+        session.close()
+
+
+def get_user_positions(user_id: int) -> list[dict]:
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(SimPosition)
+            .filter(SimPosition.user_id == user_id)
+            .order_by(SimPosition.symbol.asc())
+            .all()
+        )
+        return [
+            {
+                "symbol": row.symbol,
+                "quantity": row.quantity,
+                "purchasePrice": row.avg_price,
+                "purchaseDate": row.opened_at,
+            }
+            for row in rows
+        ]
+    finally:
+        session.close()
+
+
+def get_user_position(user_id: int, symbol: str) -> dict | None:
+    session = SessionLocal()
+    try:
+        row = (
+            session.query(SimPosition)
+            .filter(SimPosition.user_id == user_id, SimPosition.symbol == symbol.upper())
+            .first()
+        )
+        if not row:
+            return None
+        return {
+            "symbol": row.symbol,
+            "quantity": row.quantity,
+            "purchasePrice": row.avg_price,
+            "purchaseDate": row.opened_at,
+        }
+    finally:
+        session.close()
+
+
+def get_user_orders(user_id: int) -> list[dict]:
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(SimOrder)
+            .filter(SimOrder.user_id == user_id)
+            .order_by(SimOrder.created_at.desc())
+            .all()
+        )
+        return [_sim_order_dict(row) for row in rows]
+    finally:
+        session.close()
+
+
+def execute_simulated_market_order(
+    user_id: int,
+    symbol: str,
+    quantity: int,
+    trade_type: str,
+    price: float,
+) -> dict:
+    session = SessionLocal()
+    try:
+        session.execute(text("BEGIN IMMEDIATE"))
+        account = _ensure_sim_account(session, user_id)
+        position = (
+            session.query(SimPosition)
+            .filter(SimPosition.user_id == user_id, SimPosition.symbol == symbol.upper())
+            .first()
+        )
+        total_value = round(price * quantity, 2)
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        if trade_type == "buy":
+            if total_value > account.cash + 1e-9:
+                raise ValueError(f"Insufficient cash. Available ${account.cash:.2f}.")
+            account.cash = round(account.cash - total_value, 2)
+            if position:
+                new_qty = position.quantity + quantity
+                position.avg_price = round(
+                    ((position.avg_price * position.quantity) + total_value) / new_qty,
+                    4,
+                )
+                position.quantity = new_qty
+            else:
+                position = SimPosition(
+                    user_id=user_id,
+                    symbol=symbol.upper(),
+                    avg_price=round(price, 4),
+                    quantity=quantity,
+                    opened_at=today,
+                )
+                session.add(position)
+        else:
+            if not position or quantity > position.quantity:
+                held = position.quantity if position else 0
+                raise ValueError(f"Insufficient shares. You hold {held}.")
+            account.cash = round(account.cash + total_value, 2)
+            position.quantity -= quantity
+            if position.quantity == 0:
+                session.delete(position)
+
+        order = SimOrder(
+            user_id=user_id,
+            symbol=symbol.upper(),
+            price=round(price, 4),
+            quantity=quantity,
+            trade_type=SimTradeType(trade_type),
+            status=SimOrderStatus.filled,
+            filled_at=_now_utc(),
+        )
+        session.add(order)
+        session.commit()
+        session.refresh(order)
+        return {
+            "order": _sim_order_dict(order),
+            "cash": round(account.cash, 2),
+        }
+    except OperationalError as exc:
+        session.rollback()
+        if "database is locked" in str(exc).lower():
+            raise TradeConcurrencyError("Trade system is busy. Please retry.") from exc
+        raise
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def get_user_symbols(user_id: int) -> list[str]:
+    session = SessionLocal()
+    try:
+        position_syms = [
+            r.symbol for r in session.query(SimPosition.symbol).filter(SimPosition.user_id == user_id).distinct()
+        ]
+        order_syms = [
+            r.symbol for r in session.query(SimOrder.symbol).filter(SimOrder.user_id == user_id).distinct()
+        ]
+        return sorted(set(position_syms + order_syms))
+    finally:
+        session.close()
+
+
+def filter_user_orders(
+    user_id: int,
+    symbols: list | None = None,
+    trade_type: str | None = None,
+    status: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    price_min: float | None = None,
+    price_max: float | None = None,
+) -> list[dict]:
+    session = SessionLocal()
+    try:
+        q = session.query(SimOrder).filter(SimOrder.user_id == user_id)
+        if symbols:
+            q = q.filter(SimOrder.symbol.in_([s.upper() for s in symbols]))
+        if trade_type:
+            q = q.filter(SimOrder.trade_type == SimTradeType(trade_type))
+        if status:
+            q = q.filter(SimOrder.status == SimOrderStatus(status))
+        if date_from:
+            q = q.filter(SimOrder.created_at >= datetime.strptime(date_from, "%Y-%m-%d"))
+        if date_to:
+            q = q.filter(SimOrder.created_at < datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1))
+        if price_min is not None:
+            q = q.filter(SimOrder.price >= price_min)
+        if price_max is not None:
+            q = q.filter(SimOrder.price <= price_max)
+        return [_sim_order_dict(row) for row in q.order_by(SimOrder.created_at.desc()).all()]
+    finally:
+        session.close()
+
+
+def filter_user_portfolio(
+    user_id: int,
+    symbols: list | None = None,
+    pl_min: float | None = None,
+    pl_max: float | None = None,
+    val_min: float | None = None,
+    val_max: float | None = None,
+    prices: dict | None = None,
+) -> list[dict]:
+    session = SessionLocal()
+    try:
+        q = session.query(SimPosition).filter(SimPosition.user_id == user_id)
+        if symbols:
+            q = q.filter(SimPosition.symbol.in_([s.upper() for s in symbols]))
+        rows = q.all()
+    finally:
+        session.close()
+
+    prices = prices or {}
+    result = []
+    for row in rows:
+        current = prices.get(row.symbol, 0.0)
+        pl_val = (current - row.avg_price) * row.quantity
+        pl_pct = ((current - row.avg_price) / row.avg_price * 100) if row.avg_price else 0
+        market_value = round(current * row.quantity, 2)
+        if pl_min is not None and pl_pct < pl_min:
+            continue
+        if pl_max is not None and pl_pct > pl_max:
+            continue
+        if val_min is not None and market_value < val_min:
+            continue
+        if val_max is not None and market_value > val_max:
+            continue
+        result.append({
+            "symbol": row.symbol,
+            "quantity": row.quantity,
+            "avg_price": row.avg_price,
+            "current_price": current,
+            "market_value": market_value,
+            "pl": round(pl_val, 2),
+            "pl_pct": round(pl_pct, 2),
+            "purchase_date": row.opened_at,
+        })
+    return result
+
+
+def get_user_portfolio_snapshot(user_id: int) -> list[dict]:
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(SimPosition)
+            .filter(SimPosition.user_id == user_id)
+            .order_by(SimPosition.symbol.asc())
+            .all()
+        )
+        return [
+            {
+                "symbol": row.symbol,
+                "quantity": row.quantity,
+                "avg_price": row.avg_price,
+                "purchase_date": row.opened_at,
+            }
+            for row in rows
+        ]
+    finally:
+        session.close()
+
+
+def add_user_watchlist(
+    user_id: int,
+    symbol: str,
+    target_price: float = None,
+    target_direction: str = None,
+    notes: str = None,
+) -> dict:
+    session = SessionLocal()
+    try:
+        row = (
+            session.query(SimWatchlist)
+            .filter(SimWatchlist.user_id == user_id, SimWatchlist.symbol == symbol.upper())
+            .first()
+        )
+        if row:
+            row.target_price = target_price
+            row.target_direction = TargetDirection(target_direction) if target_direction else None
+            row.notes = notes
+            row.triggered = 0
+            row.triggered_at = None
+            row.triggered_price = None
+            session.commit()
+            return _sim_watchlist_dict(row)
+        row = SimWatchlist(
+            user_id=user_id,
+            symbol=symbol.upper(),
+            added_date=datetime.now().strftime("%Y-%m-%d"),
+            target_price=target_price,
+            target_direction=TargetDirection(target_direction) if target_direction else None,
+            notes=notes,
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return _sim_watchlist_dict(row)
+    finally:
+        session.close()
+
+
+def remove_user_watchlist(user_id: int, symbol: str) -> bool:
+    session = SessionLocal()
+    try:
+        row = (
+            session.query(SimWatchlist)
+            .filter(SimWatchlist.user_id == user_id, SimWatchlist.symbol == symbol.upper())
+            .first()
+        )
+        if not row:
+            return False
+        session.delete(row)
+        session.commit()
+        return True
+    finally:
+        session.close()
+
+
+def get_user_watchlist(user_id: int) -> list[dict]:
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(SimWatchlist)
+            .filter(SimWatchlist.user_id == user_id)
+            .order_by(SimWatchlist.added_date.desc(), SimWatchlist.symbol.asc())
+            .all()
+        )
+        return [_sim_watchlist_dict(row) for row in rows]
+    finally:
+        session.close()
+
+
+def get_all_active_watchlist_entries() -> list[dict]:
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(SimWatchlist)
+            .filter(SimWatchlist.target_price != None, SimWatchlist.triggered == 0)
+            .all()
+        )
+        return [
+            {"user_id": row.user_id, **_sim_watchlist_dict(row)}
+            for row in rows
+        ]
+    finally:
+        session.close()
+
+
+def mark_user_watchlist_triggered(user_id: int, symbol: str, price: float) -> None:
+    session = SessionLocal()
+    try:
+        row = (
+            session.query(SimWatchlist)
+            .filter(SimWatchlist.user_id == user_id, SimWatchlist.symbol == symbol.upper())
+            .first()
+        )
+        if row:
+            row.triggered = 1
+            row.triggered_at = _now_utc()
+            row.triggered_price = price
+            session.commit()
+    finally:
+        session.close()
+
+
+def dismiss_user_watchlist_alert(user_id: int, symbol: str) -> None:
+    session = SessionLocal()
+    try:
+        row = (
+            session.query(SimWatchlist)
+            .filter(SimWatchlist.user_id == user_id, SimWatchlist.symbol == symbol.upper())
+            .first()
+        )
+        if row:
+            row.triggered = 2
+            session.commit()
+    finally:
+        session.close()
+
+
+def update_user_watchlist_entry(
+    user_id: int,
+    symbol: str,
+    target_price=None,
+    target_direction=None,
+    notes=None,
+) -> dict | None:
+    session = SessionLocal()
+    try:
+        row = (
+            session.query(SimWatchlist)
+            .filter(SimWatchlist.user_id == user_id, SimWatchlist.symbol == symbol.upper())
+            .first()
+        )
+        if not row:
+            return None
+        row.target_price = target_price if target_price not in ("", None) else None
+        row.target_direction = TargetDirection(target_direction) if target_direction else None
+        if notes is not None:
+            row.notes = notes
+        row.triggered = 0
+        row.triggered_at = None
+        row.triggered_price = None
+        session.commit()
+        return _sim_watchlist_dict(row)
+    finally:
+        session.close()
+
+
+def get_user_unread_alerts(user_id: int) -> list[dict]:
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(SimWatchlist)
+            .filter(SimWatchlist.user_id == user_id, SimWatchlist.triggered == 1)
+            .all()
+        )
+        return [_sim_watchlist_dict(row) for row in rows]
+    finally:
+        session.close()
+
+
+def migrate_legacy_single_user_data() -> None:
+    """
+    One-time bridge from the old single-user tables into the new simulator tables.
+    Copies legacy portfolio/order/watchlist rows into a seeded `testuser` account
+    so existing local data remains visible after the multi-user switch.
+    """
+    session = SessionLocal()
+    try:
+        legacy_order_count = session.query(OrderHistory).count()
+        legacy_position_count = session.query(Portfolio).count()
+        legacy_watchlist_count = session.query(Watchlist).count()
+        if legacy_order_count == 0 and legacy_position_count == 0 and legacy_watchlist_count == 0:
+            return
+
+        user = session.query(User).filter(User.username == LEGACY_TEST_USERNAME).first()
+        if not user:
+            user = User(
+                username=LEGACY_TEST_USERNAME,
+                password_hash=_hash_password(LEGACY_TEST_PASSWORD),
+            )
+            session.add(user)
+            session.flush()
+
+        existing_sim_data = (
+            session.query(SimOrder).filter(SimOrder.user_id == user.id).count()
+            + session.query(SimPosition).filter(SimPosition.user_id == user.id).count()
+            + session.query(SimWatchlist).filter(SimWatchlist.user_id == user.id).count()
+        )
+        if existing_sim_data > 0:
+            account = _ensure_sim_account(session, user.id, starting_cash=DEFAULT_SIM_STARTING_CASH)
+            _normalize_account_nonnegative_cash(account)
+            _ensure_minimum_cash(account, LEGACY_TEST_CASH_BUFFER)
+            session.commit()
+            return
+
+        account = _ensure_sim_account(session, user.id, starting_cash=DEFAULT_SIM_STARTING_CASH)
+
+        running_cash = DEFAULT_SIM_STARTING_CASH
+        legacy_orders = session.query(OrderHistory).order_by(OrderHistory.timestamp.asc(), OrderHistory.id.asc()).all()
+        for row in legacy_orders:
+            if row.trade_type == TradeType.buy:
+                running_cash -= row.price * row.quantity
+            elif row.trade_type == TradeType.sell:
+                running_cash += row.price * row.quantity
+            session.add(SimOrder(
+                user_id=user.id,
+                symbol=row.symbol,
+                price=row.price,
+                quantity=row.quantity,
+                trade_type=SimTradeType(row.trade_type.value),
+                status=SimOrderStatus.filled if row.status == OrderStatus.filled else SimOrderStatus.canceled,
+                created_at=row.timestamp,
+                filled_at=row.timestamp,
+            ))
+
+        legacy_positions = session.query(Portfolio).all()
+        for row in legacy_positions:
+            session.add(SimPosition(
+                user_id=user.id,
+                symbol=row.symbol,
+                avg_price=row.purchasePrice,
+                quantity=row.quantity,
+                opened_at=row.purchaseDate,
+                created_at=datetime.utcnow(),
+            ))
+
+        legacy_watchlist = session.query(Watchlist).all()
+        for row in legacy_watchlist:
+            session.add(SimWatchlist(
+                user_id=user.id,
+                symbol=row.symbol,
+                added_date=row.added_date,
+                target_price=row.target_price,
+                target_direction=row.target_direction,
+                notes=row.notes,
+                triggered=row.triggered,
+                triggered_at=row.triggered_at,
+                triggered_price=row.triggered_price,
+            ))
+
+        account.cash = round(running_cash, 2)
+        _normalize_account_nonnegative_cash(account)
+        _ensure_minimum_cash(account, LEGACY_TEST_CASH_BUFFER)
+        session.commit()
+        print(
+            f"[database] migrated legacy single-user data to '{LEGACY_TEST_USERNAME}' "
+            f"(orders={legacy_order_count}, positions={legacy_position_count}, watchlist={legacy_watchlist_count})"
+        )
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()

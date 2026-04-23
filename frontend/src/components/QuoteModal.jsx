@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { CustomTooltip } from './helpers';
 
-import { API } from "./Config.js";
+import { apiJson } from "./Config.js";
 
 function QuoteModal({ onClose, shortcutOpenedAt = 0 }) {
   const [symbol,  setSymbol]  = useState("");
@@ -18,12 +18,10 @@ function QuoteModal({ onClose, shortcutOpenedAt = 0 }) {
     if (!symbol) return;
     setLoading(true); setQuote(null); setHistory([]);
     try {
-      const [qRes, hRes] = await Promise.all([
-        fetch(`${API}/quote/${symbol}`),
-        fetch(`${API}/chart/${symbol}?days=30`),
+      const [q, h] = await Promise.all([
+        apiJson(`/quote/${symbol}`),
+        apiJson(`/chart/${symbol}?days=30`),
       ]);
-      const q = await qRes.json();
-      const h = await hRes.json();
       if (q.price) setQuote(q.price);
       if (Array.isArray(h)) setHistory(h);
     } catch {}

@@ -1,6 +1,6 @@
 // WatchlistPanel.jsx — Watchlist: track stocks, set price targets, get alerts
 import { useState, useEffect, useCallback } from 'react';
-import { API } from './Config.js';
+import { apiJson } from './Config.js';
 
 const fmt  = (n) => (n ?? 0).toFixed(2);
 const fmtK = (n) => n != null
@@ -225,8 +225,7 @@ export default function WatchlistPanel({ onClose }) {
   // ── Fetch ──────────────────────────────────────────────────────────────────
   const fetchEntries = useCallback(async () => {
     try {
-      const res  = await fetch(`${API}/watchlist`);
-      const data = await res.json();
+      const data = await apiJson('/watchlist');
       setEntries(Array.isArray(data) ? data : []);
     } catch (e) {
       showFlash("Failed to load watchlist", true);
@@ -246,13 +245,11 @@ export default function WatchlistPanel({ onClose }) {
   const handleAdd = async (payload) => {
     setAddLoading(true);
     try {
-      const res  = await fetch(`${API}/watchlist`, {
+      await apiJson('/watchlist', {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) return { error: data.error };
       showFlash(`✓ ${payload.symbol} added to watchlist`);
       fetchEntries();
       return {};
@@ -266,36 +263,36 @@ export default function WatchlistPanel({ onClose }) {
   // ── Remove ─────────────────────────────────────────────────────────────────
   const handleRemove = async (symbol) => {
     try {
-      await fetch(`${API}/watchlist/${symbol}`, { method: "DELETE" });
+      await apiJson(`/watchlist/${symbol}`, { method: "DELETE" });
       setEntries(prev => prev.filter(e => e.symbol !== symbol));
       showFlash(`${symbol} removed`);
     } catch (e) {
-      showFlash("Remove failed", true);
+      showFlash(e.message || "Remove failed", true);
     }
   };
 
   // ── Dismiss alert ──────────────────────────────────────────────────────────
   const handleDismiss = async (symbol) => {
     try {
-      await fetch(`${API}/watchlist/${symbol}/dismiss`, { method: "POST" });
+      await apiJson(`/watchlist/${symbol}/dismiss`, { method: "POST" });
       fetchEntries();
-    } catch {}
+    } catch (e) {
+      showFlash(e.message || "Dismiss failed", true);
+    }
   };
 
   // ── Edit ───────────────────────────────────────────────────────────────────
   const handleEdit = async (symbol, payload) => {
     try {
-      const res  = await fetch(`${API}/watchlist/${symbol}`, {
+      await apiJson(`/watchlist/${symbol}`, {
         method:  "PATCH",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) { showFlash(data.error, true); return; }
       showFlash(`✓ ${symbol} updated`);
       fetchEntries();
     } catch (e) {
-      showFlash("Update failed", true);
+      showFlash(e.message || "Update failed", true);
     }
   };
 

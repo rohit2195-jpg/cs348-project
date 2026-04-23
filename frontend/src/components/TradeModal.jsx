@@ -1,7 +1,7 @@
 // TradeModal.jsx — Buy / Sell order modal
 import { useState, useEffect, useCallback, useRef } from 'react';
 
-import { API } from "./Config.js";
+import { apiJson } from "./Config.js";
 
 function TradeModal({ mode, onClose, onSuccess, shortcutOpenedAt = 0 }) {
   const [symbol,   setSymbol]   = useState("");
@@ -16,38 +16,23 @@ function TradeModal({ mode, onClose, onSuccess, shortcutOpenedAt = 0 }) {
   const fetchQuote = useCallback(async (sym) => {
     if (!sym) { setQuote(null); return; }
     try {
-      const r = await fetch(`${API}/quote/${sym}`);
-      const d = await r.json();
+      const d = await apiJson(`/quote/${sym}`);
       if (d.price) setQuote(d.price);
     } catch { setQuote(null); }
   }, []);
 
   const handleSubmit = async () => {
     setErr("");
+    if (loading) return;
     if (!symbol || !quantity) { setErr("Symbol and quantity required."); return; }
     setLoading(true);
     try {
-      const res  = await fetch(`${API}/${mode}`, {
+      const data = await apiJson(`/${mode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol, quantity: parseInt(quantity) }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Order failed");
-
-      // Always close modal immediately — pending orders show in flash bar
-      if (data.pending) {
-        onSuccess(data.message, {
-          pending:         true,
-          order_id:        data.order_id,
-          alpaca_order_id: data.alpaca_order_id,
-          trade_type:      mode,
-          symbol,
-          quantity:        parseInt(quantity),
-        });
-      } else {
-        onSuccess(data.message);
-      }
+      onSuccess(data.message);
     } catch (e) {
       setErr(e.message);
       setLoading(false);
@@ -94,7 +79,7 @@ function TradeModal({ mode, onClose, onSuccess, shortcutOpenedAt = 0 }) {
         {est && <div className="modal-preview">EST. {mode === "buy" ? "COST" : "PROCEEDS"}: ${parseFloat(est).toLocaleString()}</div>}
         {err && <div className="modal-error">✗ {err}</div>}
         <div className="modal-actions">
-          <button className="btn-cancel" onClick={onClose}>CANCEL</button>
+          <button className="btn-cancel" onClick={onClose} disabled={loading}>CANCEL</button>
           <button className="btn-confirm" onClick={handleSubmit} disabled={loading}>
             {loading ? "SENDING_" : `CONFIRM ${mode.toUpperCase()}`}
           </button>

@@ -1,17 +1,16 @@
 # CS348 Trading Simulator
 
-A stock trading simulator built on top of Alpaca paper trading. The project provides a React dashboard for placing simulated trades with live market data, tracking portfolio performance, viewing order history, and managing a watchlist with price alerts.
-
-Trades are submitted to Alpaca's paper environment, while local application state such as portfolio positions, order history, and watchlist entries is stored in SQLite.
+A multi-user trading simulator with a React dashboard and Flask backend. The project uses Alpaca for market data while user accounts, cash balances, positions, order history, and watchlist entries are stored locally in SQLite.
 
 ## Features
 
-- Live paper trading through Alpaca
+- Multi-user simulated trading
 - Portfolio dashboard with current holdings and P/L
 - Order history with filterable reports
 - Watchlist with target-price alerts
 - Portfolio vs. SPY charting
-- Background order settlement and watchlist polling
+- Local login/register and user-isolated accounts
+- Background watchlist polling
 - Local SQLite persistence via SQLAlchemy
 
 ## Tech Stack
@@ -21,7 +20,7 @@ Trades are submitted to Alpaca's paper environment, while local application stat
 | Frontend | React 19, Vite, Recharts |
 | Backend | Flask |
 | Database | SQLite, SQLAlchemy |
-| Market / Trading API | Alpaca paper trading |
+| Market Data API | Alpaca |
 | Config | `.env` via `python-dotenv` |
 
 ## Project Structure
@@ -48,7 +47,7 @@ Make sure you have the following installed:
 
 - Python 3.11+ recommended
 - Node.js 18+ and npm
-- An Alpaca paper trading account
+- An Alpaca API key for market data
 
 ## Environment Setup
 
@@ -130,16 +129,33 @@ Frontend default URL:
 http://localhost:5173
 ```
 
-The frontend is configured to call the backend at [frontend/src/components/Config.js](/Users/rohitsattuluri/Projects/cs348-project/frontend/src/components/Config.js:5):
+The frontend defaults to the same hostname as the page, so:
+
+- `http://localhost:5173` talks to `http://localhost:5000/api`
+- `http://127.0.0.1:5173` talks to `http://127.0.0.1:5000/api`
+
+That keeps cookie-based auth same-site in local development.
+
+See [frontend/src/components/Config.js](/Users/rohitsattuluri/Projects/cs348-project/frontend/src/components/Config.js:1):
 
 ```js
-export const API = "http://127.0.0.1:5000/api";
+const host = typeof window !== "undefined" ? window.location.hostname : "127.0.0.1";
+const defaultApi = `http://${host}:5000/api`;
 ```
 
-If you change the backend port, update that file as well.
+If you change the backend port, set `VITE_API_BASE_URL`.
 
 For deploys, the frontend can also read `VITE_API_BASE_URL` at build time.
 See [frontend/.env.example](/Users/rohitsattuluri/Projects/cs348-project/frontend/.env.example:1).
+
+### Migrated test account
+
+If you already had data in the legacy single-user tables, the backend seeds a simulator user on startup:
+
+- username: `testuser`
+- password: `testpass123`
+
+That account is only intended to preserve visibility into the old local portfolio, order history, and watchlist after the multi-user cutover.
 
 ### SQLite database location
 
@@ -153,31 +169,32 @@ Tables and indexes are managed by [backend/database.py](/Users/rohitsattuluri/Pr
 
 | Method | Route | Description |
 | --- | --- | --- |
-| `GET` | `/api/account` | Alpaca account summary |
-| `GET` | `/api/portfolio` | Local portfolio with live prices |
-| `GET` | `/api/orders` | Local order history |
+| `GET` | `/api/session` | Session status |
+| `GET` | `/api/account` | Simulated account summary |
+| `GET` | `/api/portfolio` | User portfolio with live prices |
+| `GET` | `/api/orders` | User order history |
 | `GET` | `/api/quote/<symbol>` | Latest quote for one ticker |
 | `GET` | `/api/chart` | Portfolio vs. SPY chart data |
 | `GET` | `/api/chart/<symbol>` | Historical chart for a ticker |
-| `POST` | `/api/buy` | Place a paper buy order |
-| `POST` | `/api/sell` | Place a paper sell order |
-| `POST` | `/api/sync` | Sync pending order status |
+| `POST` | `/api/register` | Create a local simulator user |
+| `POST` | `/api/login` | Log in |
+| `POST` | `/api/logout` | Log out |
+| `POST` | `/api/buy` | Execute a simulated buy |
+| `POST` | `/api/sell` | Execute a simulated sell |
 | `GET` | `/api/watchlist` | Watchlist entries |
 | `POST` | `/api/watchlist` | Add or update a watchlist entry |
 
 ## Order Lifecycle
 
-1. A user places a buy or sell order from the frontend.
-2. The backend validates the symbol and quantity and fetches a live quote.
-3. The order is stored locally in `order_history` as pending.
-4. The order is submitted to Alpaca paper trading.
-5. The backend attempts to settle it immediately.
-6. If it remains pending, the frontend and background server processes continue syncing until it is filled or canceled.
+1. A logged-in user places a buy or sell order from the frontend.
+2. The backend validates the symbol and quantity and fetches a live quote from Alpaca.
+3. The backend executes the trade locally, updating cash, positions, and order history atomically in SQLite.
+4. The dashboard refreshes with the new simulated account state.
 
 Important behavior:
 
-- Portfolio positions are updated only after a confirmed fill.
-- The backend also runs background checks for pending orders and watchlist targets.
+- Portfolio positions and cash update immediately on successful simulated fills.
+- The backend runs background checks for watchlist targets.
 
 ## Watchlist and Alerts
 
@@ -191,20 +208,21 @@ The app now also creates indexes to speed up common order-history and watchlist 
 
 ## Troubleshooting
 
-### Backend starts but Alpaca calls fail
+### Backend starts but market-data calls fail
 
 Check:
 
 - your `.env` file exists in `backend/`
 - `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` are valid
-- you are using Alpaca paper credentials
+- your Alpaca credentials have access to stock market data
 
 ### Frontend loads but API calls fail
 
 Check:
 
 - backend is running on `127.0.0.1:5000`
-- frontend API base URL matches the backend port
+- you opened the frontend on the same hostname family as the backend (`localhost` with `localhost`, or `127.0.0.1` with `127.0.0.1`)
+- `VITE_API_BASE_URL` matches the backend port if you overrode it
 - browser console and backend terminal for request errors
 
 ### Python import errors

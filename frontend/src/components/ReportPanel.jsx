@@ -5,7 +5,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 
-import { API } from "./Config.js";
+import { apiJson } from "./Config.js";
 
 const fmt  = (n) => (n ?? 0).toFixed(2);
 const fmtK = (n) => n != null
@@ -279,10 +279,7 @@ export default function ReportPanel({ onClose }) {
   // This is the dynamic dropdown — built from /api/symbols, never hardcoded.
   // Any symbol you trade automatically appears here.
   useEffect(() => {
-    fetch(`${API}/symbols`)
-      .then(r => r.json())
-      .then(setSymbols)
-      .catch(() => {});
+    apiJson('/symbols').then(setSymbols).catch(() => {});
   }, []);
 
   // ── Run portfolio filter ───────────────────────────────────────────────────
@@ -295,8 +292,7 @@ export default function ReportPanel({ onClose }) {
       if (pfPlMax  !== "")  p.set("pl_max",  pfPlMax);
       if (pfValMin !== "")  p.set("val_min", pfValMin);
       if (pfValMax !== "")  p.set("val_max", pfValMax);
-      const res  = await fetch(`${API}/filter/portfolio?${p}`);
-      const data = await res.json();
+      const data = await apiJson(`/filter/portfolio?${p}`);
       setPfResults(data.results);
       setPfFilters(data.filters);
     } finally { setLoading(false); }
@@ -314,8 +310,7 @@ export default function ReportPanel({ onClose }) {
       if (orDateTo)         p.set("date_to",    orDateTo);
       if (orPrMin !== "")   p.set("price_min",  orPrMin);
       if (orPrMax !== "")   p.set("price_max",  orPrMax);
-      const res  = await fetch(`${API}/filter/orders?${p}`);
-      const data = await res.json();
+      const data = await apiJson(`/filter/orders?${p}`);
       setOrResults(data.results);
       setOrFilters(data.filters);
     } finally { setLoading(false); }
@@ -324,8 +319,7 @@ export default function ReportPanel({ onClose }) {
   // ── Snapshot ───────────────────────────────────────────────────────────────
   const takeSnapshot = async (which) => {
     try {
-      const res  = await fetch(`${API}/report/snapshot`);
-      const data = await res.json();
+      const data = await apiJson('/report/snapshot');
       if (which === "before") {
         setSnapBefore(data); setSnapAfter(null);
         setSnapMsg("✓ Before snapshot taken. Make your changes, then take After snapshot.");
@@ -403,7 +397,6 @@ export default function ReportPanel({ onClose }) {
                       <select className="rp-select" value={orStatus} onChange={e => setOrStatus(e.target.value)}>
                         <option value="">All</option>
                         <option value="filled">Filled</option>
-                        <option value="pending">Pending</option>
                         <option value="canceled">Canceled</option>
                       </select>
                     </div>
