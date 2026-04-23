@@ -31,10 +31,15 @@ app = Flask(__name__)
 db.init_db()
 
 SESSION_COOKIE = "CS348_SESSION"
-ALLOWED_ORIGINS = {
+DEFAULT_ALLOWED_ORIGINS = {
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 }
+ALLOWED_ORIGINS = {
+    origin.strip().rstrip("/")
+    for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+} or DEFAULT_ALLOWED_ORIGINS
 _user_locks = defaultdict(threading.Lock)
 _user_locks_guard = threading.Lock()
 
@@ -42,6 +47,7 @@ _user_locks_guard = threading.Lock()
 def _is_allowed_origin(origin: str | None) -> bool:
     if not origin:
         return False
+    origin = origin.rstrip("/")
     if origin in ALLOWED_ORIGINS:
         return True
     parsed = urlparse(origin)
