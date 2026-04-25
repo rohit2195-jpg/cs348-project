@@ -178,25 +178,25 @@ export default function Dashboard({ user, onLogout }) {
             <div className="statusbar-left">
               <span className="status-label">COMMAND DECK</span>
               <button className={`cmd-btn ${modal === 'buy' ? 'active' : ''}`} onClick={() => setModal("buy")}>
-                [B] BUY
+                <span className="cmd-shortcut">[B]</span>BUY
               </button>
               <button className={`cmd-btn ${modal === 'sell' ? 'active' : ''}`} onClick={() => setModal("sell")}>
-                [S] SELL
+                <span className="cmd-shortcut">[S]</span>SELL
               </button>
               <button className={`cmd-btn ${modal === 'quote' ? 'active' : ''}`} onClick={() => setModal("quote")}>
-                [Q] QUOTE
+                <span className="cmd-shortcut">[Q]</span>QUOTE
               </button>
               <button className="cmd-btn" onClick={fetchAll}>
-                [R] REFRESH
+                <span className="cmd-shortcut">[R]</span>REFRESH
               </button>
               <button className={`cmd-btn ${modal === 'report' ? 'active' : ''}`} onClick={() => setModal("report")}>
-                [F] FILTER
+                <span className="cmd-shortcut">[F]</span>FILTER
               </button>
               <button
                 className={`cmd-btn cmd-btn-watch ${modal === 'watchlist' ? 'active' : ''}`}
                 onClick={() => setModal("watchlist")}
               >
-                [W] WATCH
+                <span className="cmd-shortcut">[W]</span>WATCH
                 {wlAlerts > 0 && <span className="watch-alert">{wlAlerts}</span>}
               </button>
             </div>

@@ -147,7 +147,7 @@ const authStyles = `
   }
 
   .auth-shell {
-    min-height: 100vh;
+    min-height: 100dvh;
     display: grid;
     place-items: center;
     background:
@@ -347,6 +347,11 @@ const authStyles = `
   }
 
   @media (max-width: 560px) {
+    .auth-shell {
+      padding: 16px;
+      align-items: start;
+    }
+
     .auth-card {
       padding: 28px 20px 24px;
     }

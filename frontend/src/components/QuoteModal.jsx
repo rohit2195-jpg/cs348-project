@@ -24,7 +24,10 @@ function QuoteModal({ onClose, shortcutOpenedAt = 0 }) {
       ]);
       if (q.price) setQuote(q.price);
       if (Array.isArray(h)) setHistory(h);
-    } catch {}
+    } catch {
+      setQuote(null);
+      setHistory([]);
+    }
     setLoading(false);
   };
 
@@ -42,7 +45,7 @@ function QuoteModal({ onClose, shortcutOpenedAt = 0 }) {
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal" style={{ maxWidth: 500 }}>
         <div className="modal-title">▸ QUOTE</div>
-        <div className="field" style={{ display: "flex", gap: 8 }}>
+        <div className="field quote-search-row">
           <input ref={inputRef} value={symbol}
             onChange={(e) => setSymbol(e.target.value.toUpperCase())}
             onKeyDown={(e) => {

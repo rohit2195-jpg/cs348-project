@@ -76,7 +76,8 @@ function PortfolioResults({ results, count, filters }) {
         </span>
       </div>
       {count === 0 ? <div className="rp-empty">// NO POSITIONS MATCH FILTERS</div> : (
-        <table className="rp-table">
+        <div className="report-table-scroll">
+          <table className="rp-table">
           <thead>
             <tr><th>SYMBOL</th><th>QTY</th><th>AVG PRICE</th><th>CURR PRICE</th>
               <th>MKT VALUE</th><th>P/L $</th><th>P/L %</th></tr>
@@ -108,7 +109,8 @@ function PortfolioResults({ results, count, filters }) {
               <td></td>
             </tr>
           </tfoot>
-        </table>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -133,7 +135,8 @@ function OrderResults({ results, count, filters }) {
         </span>
       </div>
       {count === 0 ? <div className="rp-empty">// NO ORDERS MATCH FILTERS</div> : (
-        <table className="rp-table">
+        <div className="report-table-scroll">
+          <table className="rp-table">
           <thead>
             <tr><th>#</th><th>SYMBOL</th><th>TYPE</th><th>QTY</th>
               <th>PRICE</th><th>TOTAL</th><th>STATUS</th><th>DATE</th></tr>
@@ -159,7 +162,8 @@ function OrderResults({ results, count, filters }) {
               <td colSpan={2}></td>
             </tr>
           </tfoot>
-        </table>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -199,7 +203,8 @@ function SnapshotDiff({ before, after }) {
       {changed.length === 0
         ? <div className="rp-empty">// NO CHANGES DETECTED BETWEEN SNAPSHOTS</div>
         : (
-          <table className="rp-table">
+          <div className="report-table-scroll">
+            <table className="rp-table">
             <thead>
               <tr><th>SYMBOL</th><th>QTY BEFORE</th><th>QTY AFTER</th><th>Δ QTY</th>
                 <th>AVG BEFORE</th><th>AVG AFTER</th><th>VAL BEFORE</th><th>VAL AFTER</th><th>Δ VALUE</th></tr>
@@ -237,7 +242,8 @@ function SnapshotDiff({ before, after }) {
                 </td>
               </tr>
             </tfoot>
-          </table>
+            </table>
+          </div>
         )
       }
     </div>
@@ -459,26 +465,28 @@ export default function ReportPanel({ onClose }) {
                         {snapBefore.taken_at} — TOTAL: {fmtK(snapBefore.total_value)}
                       </span>
                     </div>
-                    <table className="rp-table">
-                      <thead><tr>
-                        <th>SYMBOL</th><th>QTY</th><th>AVG PRICE</th>
-                        <th>CURR PRICE</th><th>MKT VALUE</th><th>P/L %</th>
-                      </tr></thead>
-                      <tbody>
-                        {snapBefore.snapshot.map(r => (
-                          <tr key={r.symbol}>
-                            <td className="rp-sym">{r.symbol}</td>
-                            <td>{r.quantity}</td>
-                            <td>{fmtK(r.avg_price)}</td>
-                            <td>{fmtK(r.current_price)}</td>
-                            <td>{fmtK(r.market_value)}</td>
-                            <td className={r.pl_pct >= 0 ? "rp-profit" : "rp-loss"}>
-                              {r.pl_pct >= 0 ? "+" : ""}{fmt(r.pl_pct)}%
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    <div className="report-table-scroll">
+                      <table className="rp-table">
+                        <thead><tr>
+                          <th>SYMBOL</th><th>QTY</th><th>AVG PRICE</th>
+                          <th>CURR PRICE</th><th>MKT VALUE</th><th>P/L %</th>
+                        </tr></thead>
+                        <tbody>
+                          {snapBefore.snapshot.map(r => (
+                            <tr key={r.symbol}>
+                              <td className="rp-sym">{r.symbol}</td>
+                              <td>{r.quantity}</td>
+                              <td>{fmtK(r.avg_price)}</td>
+                              <td>{fmtK(r.current_price)}</td>
+                              <td>{fmtK(r.market_value)}</td>
+                              <td className={r.pl_pct >= 0 ? "rp-profit" : "rp-loss"}>
+                                {r.pl_pct >= 0 ? "+" : ""}{fmt(r.pl_pct)}%
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
                 <SnapshotDiff before={snapBefore} after={snapAfter} />
@@ -600,4 +608,48 @@ const rpStyles = `
     padding: 10px 12px; border: 1px solid var(--border); background: var(--panel); letter-spacing: 0.5px;
   }
   .rp-snap-msg { font-size: 11px; color: var(--accent2); letter-spacing: 1px; padding: 8px 0; }
+
+  @media (max-width: 768px) {
+    .rp-overlay {
+      padding: 12px;
+    }
+    .rp-panel {
+      max-width: 100%;
+    }
+    .rp-header {
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .rp-tabs {
+      flex-wrap: wrap;
+    }
+    .rp-tab {
+      flex: 1 1 100%;
+      border-bottom: 1px solid var(--border);
+    }
+    .rp-body {
+      padding: 14px 12px;
+      max-height: calc(100dvh - 148px);
+    }
+    .rp-row {
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+    .rp-range,
+    .rp-actions,
+    .rp-results-header {
+      flex-wrap: wrap;
+    }
+    .rp-input,
+    .rp-input[type=date] {
+      width: 100%;
+    }
+    .report-table-scroll {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .rp-table {
+      min-width: 720px;
+    }
+  }
 `;

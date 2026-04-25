@@ -4,42 +4,51 @@ import { fmtK } from './helpers';
 function AccountHeader({ account, lastUpdate, onSettings, user, onLogout }) {
   return (
     <div className="header">
-      <span className="header-title">TERMINAL<span className="blink">_</span></span>
-      {account ? (
-        <>
+      <div className="header-main">
+        <span className="header-title">TERMINAL<span className="blink">_</span></span>
+        {account ? (
+          <>
+            <div className={`market-badge ${account.market_open ? "open" : "closed"}`}>
+              {account.market_open ? "● MKT OPEN" : "● MKT CLOSED"}
+            </div>
+            {lastUpdate && <span className="last-update">UPD {lastUpdate}</span>}
+          </>
+        ) : (
+          <span className="loading" style={{ fontSize: 13, height: "auto" }}>
+            CONNECTING<span className="blink">_</span>
+          </span>
+        )}
+      </div>
+
+      {account && (
+        <div className="header-stats">
           {[
-            ["Equity",         account.equity],
-            ["Portfolio",      account.portfolio_value],
-            ["Buying Power",   account.buying_power],
-            ["Cash",           account.cash],
+            ["Equity", account.equity],
+            ["Portfolio", account.portfolio_value],
+            ["Buying Power", account.buying_power],
+            ["Cash", account.cash],
+            ["User", user?.username || account.username],
           ].map(([label, val]) => (
             <div className="header-stat" key={label}>
               <span className="header-stat-label">{label}</span>
-              <span className="header-stat-value">{fmtK(val)}</span>
+              <span className="header-stat-value">
+                {typeof val === "number" ? fmtK(val) : val}
+              </span>
             </div>
           ))}
-          {lastUpdate && <span className="last-update">UPD {lastUpdate}</span>}
-          <div className="header-stat" style={{ minWidth: 110 }}>
-            <span className="header-stat-label">User</span>
-            <span className="header-stat-value">{user?.username || account.username}</span>
-          </div>
-          <div className={`market-badge ${account.market_open ? "open" : "closed"}`} style={{ marginLeft: "auto" }}>
-            {account.market_open ? "● MKT OPEN" : "● MKT CLOSED"}
-          </div>
-        </>
-      ) : (
-        <span className="loading" style={{ fontSize: 13, height: "auto" }}>
-          CONNECTING<span className="blink">_</span>
-        </span>
+        </div>
       )}
-      <button className="cmd-btn" style={{ marginLeft: account ? "8px" : "auto" }} onClick={onSettings}>
-        ⚙ CFG
-      </button>
-      {account && (
-        <button className="cmd-btn" style={{ marginLeft: "8px" }} onClick={onLogout}>
-          EXIT
+
+      <div className="header-actions">
+        <button className="cmd-btn" onClick={onSettings}>
+          ⚙ CFG
         </button>
-      )}
+        {account && (
+          <button className="cmd-btn" onClick={onLogout}>
+            EXIT
+          </button>
+        )}
+      </div>
     </div>
   );
 }

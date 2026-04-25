@@ -86,7 +86,6 @@ function WatchlistRow({ entry, onRemove, onDismiss, onEdit }) {
   const [editNotes,  setEditNotes]  = useState(entry.notes ?? "");
 
   const isTriggered  = entry.triggered === 1;
-  const isDismissed  = entry.triggered === 2;
   const hasTarget    = entry.target_price != null;
   const price        = entry.current_price;
 
@@ -227,7 +226,7 @@ export default function WatchlistPanel({ onClose }) {
     try {
       const data = await apiJson('/watchlist');
       setEntries(Array.isArray(data) ? data : []);
-    } catch (e) {
+    } catch {
       showFlash("Failed to load watchlist", true);
     } finally {
       setLoading(false);
@@ -373,30 +372,32 @@ export default function WatchlistPanel({ onClose }) {
                   ))}
                 </div>
 
-                <table className="wl-table">
-                  <thead>
-                    <tr>
-                      <th style={{ textAlign: "left" }}>SYMBOL</th>
-                      <th>CURR PRICE</th>
-                      <th>TARGET</th>
-                      <th>DISTANCE</th>
-                      <th style={{ textAlign: "left" }}>NOTES</th>
-                      <th>ADDED</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sorted.map(entry => (
-                      <WatchlistRow
-                        key={entry.symbol}
-                        entry={entry}
-                        onRemove={handleRemove}
-                        onDismiss={handleDismiss}
-                        onEdit={handleEdit}
-                      />
-                    ))}
-                  </tbody>
-                </table>
+                <div className="watchlist-table-scroll">
+                  <table className="wl-table">
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: "left" }}>SYMBOL</th>
+                        <th>CURR PRICE</th>
+                        <th>TARGET</th>
+                        <th>DISTANCE</th>
+                        <th style={{ textAlign: "left" }}>NOTES</th>
+                        <th>ADDED</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sorted.map(entry => (
+                        <WatchlistRow
+                          key={entry.symbol}
+                          entry={entry}
+                          onRemove={handleRemove}
+                          onDismiss={handleDismiss}
+                          onEdit={handleEdit}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
 
                 {/* Legend */}
                 <div className="wl-legend">
@@ -563,5 +564,43 @@ const wlStyles = `
   .wl-empty {
     color: var(--text-dim); font-size: 12px; letter-spacing: 1px;
     padding: 24px; text-align: center; line-height: 2;
+  }
+
+  @media (max-width: 768px) {
+    .wl-overlay {
+      padding: 12px;
+    }
+    .wl-panel {
+      max-width: 100%;
+    }
+    .wl-body {
+      padding: 14px 12px;
+      max-height: calc(100dvh - 110px);
+    }
+    .wl-form {
+      padding: 12px;
+    }
+    .wl-form-row {
+      flex-direction: column;
+      gap: 10px;
+    }
+    .wl-field,
+    .wl-field[style] {
+      width: 100%;
+      min-width: 0;
+      flex: 1 1 auto;
+      align-self: stretch;
+    }
+    .wl-sort-bar,
+    .wl-legend {
+      flex-wrap: wrap;
+    }
+    .watchlist-table-scroll {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .wl-table {
+      min-width: 720px;
+    }
   }
 `;

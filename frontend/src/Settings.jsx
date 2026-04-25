@@ -214,6 +214,22 @@ const panelStyles = `
     letter-spacing: 0.5px; line-height: 1.7;
     padding: 12px; border: 1px solid var(--border); background: var(--panel);
   }
+
+  @media (max-width: 768px) {
+    .settings-overlay {
+      justify-content: center;
+      padding: 12px;
+    }
+
+    .settings-drawer {
+      width: min(100%, 380px);
+      height: auto;
+      max-height: calc(100dvh - 24px);
+      border: 1px solid var(--border);
+      border-left: 1px solid var(--border);
+      box-shadow: 0 8px 40px rgba(0,0,0,0.45);
+    }
+  }
 `;
 
 const THEME_META = {
