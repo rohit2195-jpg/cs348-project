@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { SettingsPanel } from '../Settings';
 import ReportPanel from './ReportPanel';
 import WatchlistPanel from './WatchListPanel';
@@ -12,8 +12,56 @@ import { styles } from './styles';
 import { apiFetch, apiJson } from './Config';
 
 const REFRESH_MS = 15000;
+const DASHBOARD_PREFS_KEY = 'cs348_dashboard_prefs';
+const DEFAULT_COLLAPSED_PANELS = {
+  portfolio: false,
+  orders: false,
+  charts: false,
+};
+const TIMEFRAME_OPTIONS = ['5D', '20D', '1M', '3M'];
+const TIMEFRAME_TO_DAYS = {
+  '5D': 5,
+  '20D': 20,
+  '1M': 30,
+  '3M': 90,
+};
+
+function loadDashboardPrefs() {
+  if (typeof window === 'undefined') {
+    return {
+      timeframe: '20D',
+      selectedSymbol: '',
+      collapsedPanels: DEFAULT_COLLAPSED_PANELS,
+    };
+  }
+
+  try {
+    const raw = localStorage.getItem(DASHBOARD_PREFS_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const timeframe = TIMEFRAME_OPTIONS.includes(parsed?.timeframe) ? parsed.timeframe : '20D';
+    const selectedSymbol = typeof parsed?.selectedSymbol === 'string' ? parsed.selectedSymbol : '';
+    const storedPanels = parsed?.collapsedPanels;
+    const collapsedPanels = storedPanels && typeof storedPanels === 'object'
+      ? {
+          ...DEFAULT_COLLAPSED_PANELS,
+          ...Object.fromEntries(
+            Object.entries(storedPanels).filter(([, value]) => typeof value === 'boolean')
+          ),
+        }
+      : DEFAULT_COLLAPSED_PANELS;
+
+    return { timeframe, selectedSymbol, collapsedPanels };
+  } catch {
+    return {
+      timeframe: '20D',
+      selectedSymbol: '',
+      collapsedPanels: DEFAULT_COLLAPSED_PANELS,
+    };
+  }
+}
 
 export default function Dashboard({ user, onLogout }) {
+  const initialPrefs = useMemo(() => loadDashboardPrefs(), []);
   const [account, setAccount] = useState(null);
   const [positions, setPositions] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -24,7 +72,14 @@ export default function Dashboard({ user, onLogout }) {
   const [flash, setFlash] = useState({ msg: "", err: false });
   const [wlAlerts, setWlAlerts] = useState(0);
   const [shortcutOpenedAt, setShortcutOpenedAt] = useState(0);
+  const [collapsedPanels, setCollapsedPanels] = useState(initialPrefs.collapsedPanels);
+  const [selectedTimeframe, setSelectedTimeframe] = useState(initialPrefs.timeframe);
+  const [selectedChartSymbol, setSelectedChartSymbol] = useState(initialPrefs.selectedSymbol);
   const shortcutOpenedModal = useRef(false);
+  const flashTimeoutRef = useRef(null);
+  const refreshTimeoutRef = useRef(null);
+  const stockSymbols = useMemo(() => Object.keys(chartData?.stocks || {}), [chartData?.stocks]);
+  const stockSymbolsKey = stockSymbols.join('|');
   const handleAuthFailure = useCallback(() => {
     setModal(null);
     setAccount(null);
@@ -36,8 +91,25 @@ export default function Dashboard({ user, onLogout }) {
   }, [onLogout]);
 
   const showFlash = useCallback((msg, isErr = false) => {
+    if (flashTimeoutRef.current) {
+      clearTimeout(flashTimeoutRef.current);
+    }
     setFlash({ msg, err: isErr });
-    setTimeout(() => setFlash({ msg: "", err: false }), 4000);
+    flashTimeoutRef.current = setTimeout(() => {
+      setFlash({ msg: "", err: false });
+      flashTimeoutRef.current = null;
+    }, 4000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (flashTimeoutRef.current) {
+        clearTimeout(flashTimeoutRef.current);
+      }
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
+    };
   }, []);
 
   const fetchAll = useCallback(async () => {
@@ -46,7 +118,7 @@ export default function Dashboard({ user, onLogout }) {
         apiJson("/account"),
         apiJson("/portfolio"),
         apiJson("/orders"),
-        apiJson("/chart"),
+        apiJson(`/chart?days=${TIMEFRAME_TO_DAYS[selectedTimeframe]}`),
       ]);
       setAccount(acct);
       setPositions(Array.isArray(pos) ? pos : []);
@@ -62,7 +134,7 @@ export default function Dashboard({ user, onLogout }) {
     } finally {
       setLoading(false);
     }
-  }, [handleAuthFailure, showFlash]);
+  }, [handleAuthFailure, selectedTimeframe, showFlash]);
 
   useEffect(() => {
     fetchAll();
@@ -134,6 +206,27 @@ export default function Dashboard({ user, onLogout }) {
   }, [modal, fetchAll]);
 
   useEffect(() => {
+    if (stockSymbols.length === 0) {
+      setSelectedChartSymbol('');
+      return;
+    }
+
+    setSelectedChartSymbol((current) => (
+      current && stockSymbols.includes(current) ? current : stockSymbols[0]
+    ));
+  }, [stockSymbols, stockSymbolsKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DASHBOARD_PREFS_KEY, JSON.stringify({
+        timeframe: selectedTimeframe,
+        selectedSymbol: selectedChartSymbol,
+        collapsedPanels,
+      }));
+    } catch {}
+  }, [collapsedPanels, selectedChartSymbol, selectedTimeframe]);
+
+  useEffect(() => {
     if (!modal || !shortcutOpenedModal.current) return;
     const clearShortcutFlag = () => {
       shortcutOpenedModal.current = false;
@@ -146,7 +239,13 @@ export default function Dashboard({ user, onLogout }) {
   const handleTradeSuccess = useCallback((msg) => {
     setModal(null);
     showFlash(msg, false);
-    setTimeout(fetchAll, 500);
+    if (refreshTimeoutRef.current) {
+      clearTimeout(refreshTimeoutRef.current);
+    }
+    refreshTimeoutRef.current = setTimeout(() => {
+      refreshTimeoutRef.current = null;
+      fetchAll();
+    }, 500);
   }, [fetchAll, showFlash]);
 
   const handleLogout = useCallback(async () => {
@@ -156,6 +255,13 @@ export default function Dashboard({ user, onLogout }) {
       onLogout();
     }
   }, [onLogout]);
+
+  const togglePanel = useCallback((panel) => {
+    setCollapsedPanels((current) => ({
+      ...current,
+      [panel]: !current[panel],
+    }));
+  }, []);
 
   return (
     <>
@@ -169,10 +275,30 @@ export default function Dashboard({ user, onLogout }) {
           onLogout={handleLogout}
         />
 
-        <PortfolioPanel positions={positions} loading={loading} />
-        <OrdersPanel orders={orders} loading={loading} />
+        <PortfolioPanel
+          positions={positions}
+          loading={loading}
+          collapsed={collapsedPanels.portfolio}
+          onToggle={() => togglePanel("portfolio")}
+        />
+        <OrdersPanel
+          orders={orders}
+          loading={loading}
+          collapsed={collapsedPanels.orders}
+          onToggle={() => togglePanel("orders")}
+        />
         <div className="lower-panel">
-          <ChartsPanel chartData={chartData} loading={loading} />
+          <ChartsPanel
+            chartData={chartData}
+            loading={loading}
+            collapsed={collapsedPanels.charts}
+            onToggle={() => togglePanel("charts")}
+            selectedSymbol={selectedChartSymbol}
+            onSelectSymbol={setSelectedChartSymbol}
+            timeframe={selectedTimeframe}
+            timeframeOptions={TIMEFRAME_OPTIONS}
+            onTimeframeChange={setSelectedTimeframe}
+          />
 
           <div className="statusbar">
             <div className="statusbar-left">
