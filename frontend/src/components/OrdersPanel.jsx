@@ -3,7 +3,7 @@ import { fmt } from './helpers';
 
 function OrdersPanel({ orders, loading }) {
   return (
-    <div className="panel">
+    <div className="panel panel-orders">
       <div className="panel-title">▸ ORDER HISTORY</div>
       <div className="panel-scroll">
         {loading && <div className="loading" style={{ fontSize: 14 }}>LOADING<span className="blink">_</span></div>}

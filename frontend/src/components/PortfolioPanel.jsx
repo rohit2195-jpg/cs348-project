@@ -3,7 +3,7 @@ import { fmt, fmtK, sign } from './helpers';
 
 function PortfolioPanel({ positions, loading }) {
   return (
-    <div className="panel">
+    <div className="panel panel-portfolio">
       <div className="panel-title">▸ PORTFOLIO</div>
       <div className="panel-scroll">
         {loading && <div className="loading" style={{ fontSize: 14 }}>LOADING<span className="blink">_</span></div>}

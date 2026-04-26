@@ -208,7 +208,23 @@ export const styles = `
     .app {
       min-height: 100dvh;
       height: auto;
-      grid-template-rows: auto minmax(280px, auto) minmax(280px, auto) auto;
+      grid-template-rows: auto minmax(0, auto) minmax(0, auto) auto;
+    }
+
+    .panel-portfolio,
+    .panel-orders {
+      min-height: 0;
+      max-height: clamp(180px, 24dvh, 220px);
+    }
+    .panel-portfolio .panel-scroll,
+    .panel-orders .panel-scroll {
+      min-height: 0;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .panel-portfolio .panel-table-scroll,
+    .panel-orders .order-table-scroll {
+      min-height: 0;
     }
 
     .header {
