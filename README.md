@@ -210,48 +210,6 @@ The watchlist supports:
 
 The app now also creates indexes to speed up common order-history and watchlist queries when the backend initializes.
 
-## Troubleshooting
-
-### Backend starts but market-data calls fail
-
-Check:
-
-- your `.env` file exists in `backend/`
-- `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` are valid
-- your Alpaca credentials have access to stock market data
-
-### Frontend loads but API calls fail
-
-Check:
-
-- backend is running on `127.0.0.1:5000`
-- you opened the frontend on the same hostname family as the backend (`localhost` with `localhost`, or `127.0.0.1` with `127.0.0.1`)
-- `VITE_API_BASE_URL` matches the backend port if you overrode it
-- browser console and backend terminal for request errors
-
-### Python import errors
-
-Make sure you activated the backend virtual environment before running the server:
-
-```bash
-cd backend
-source .venv/bin/activate
-```
-
-Then reinstall dependencies if needed:
-
-```bash
-pip install flask alpaca-py sqlalchemy python-dotenv
-```
-
-## Contributing
-
-When making changes:
-
-1. Run the validation script before committing.
-2. Keep backend and frontend ports in sync.
-3. Avoid running multiple backend instances against the same SQLite DB.
-4. Prefer updating this README when setup or runtime behavior changes.
 
 ## Use of AI in This Project
 
@@ -261,6 +219,3 @@ I designed the database structure myself using DB Browser for SQLite. I also wro
 
 Even though I used some AI-assisted coding, I did not rely on its generated output blindly. For each change, I reviewed the code carefully to understand how it would affect the existing application and compared it against the behavior I originally intended. Because I understood the codebase thoroughly, I was able to diagnose and fix issues that came up during testing, including cases where the frontend called the wrong endpoints and where the `portfolio` table was not producing the correct profit values.
 
-## License
-
-Add your project license here if one is intended for the repository.
