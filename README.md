@@ -2,6 +2,10 @@
 
 A multi-user trading simulator with a React dashboard and Flask backend. The project uses Alpaca for market data while user accounts, cash balances, positions, order history, and watchlist entries are stored locally in SQLite.
 
+## Link to hosted project
+
+Visit the website: https://d39xe7wu5kbzn1.cloudfront.net/
+
 ## Features
 
 - Multi-user simulated trading
