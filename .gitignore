@@ -3,4 +3,3 @@
 backend/.venv/
 __pycache__/
 *.pyc
-CODEX.md
