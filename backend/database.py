@@ -24,6 +24,7 @@ engine       = create_engine(
     DATABASE_URL,
     echo=False,
     connect_args={"check_same_thread": False},   # allow use across threads
+    isolation_level="SERIALIZABLE",
 )
 
 # Enable WAL mode so concurrent thread writes don't block each other.
